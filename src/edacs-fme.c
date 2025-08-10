@@ -21,6 +21,108 @@
  *-----------------------------------------------------------------------------*/
 #include "dsd.h"
 
+
+int isCustomAfsString(dsd_state * state) {
+  return state->edacs_a_bits != 4 || state->edacs_f_bits != 4 || state->edacs_s_bits != 3;
+}
+
+//Get the string length we need for an AFS string, math-style
+int getAfsStringLength(dsd_state * state) {
+  if (!isCustomAfsString(state))
+    return 6;
+
+  int length = 0;
+  length += (state->edacs_a_bits + 2) / 3;
+  length += (state->edacs_f_bits + 2) / 3;
+  length += (state->edacs_s_bits + 2) / 3;
+  length += 2; //colon separators
+
+  // This will be either 6 or 7
+  return length;
+}
+
+//Format the AFS string, Florida-style
+int getAfsString(dsd_state * state, char * buffer, int a, int f, int s) {
+  if (!isCustomAfsString(state))
+  {
+    sprintf(buffer, "%02d-%02d%01d", a, f, s);
+    return 6;
+  }
+
+  int printed_chars = 0;
+  switch (state->edacs_a_bits)
+  {
+    case 1:
+    case 2:
+    case 3:
+      sprintf(buffer, "%01d:", a);
+      printed_chars += 1;
+      break;
+    case 4:
+    case 5:
+    case 6:
+      sprintf(buffer, "%02d:", a);
+      printed_chars += 2;
+      break;
+    case 7:
+    case 8:
+    case 9:
+      sprintf(buffer, "%03d:", a);
+      printed_chars += 3;
+      break;
+  }
+
+  sprintf(buffer + printed_chars, ":");
+  printed_chars++;
+
+  switch (state->edacs_f_bits) {
+    case 1:
+    case 2:
+    case 3:
+      sprintf(buffer + printed_chars, "%01d", f);
+      printed_chars += 1;
+      break;
+    case 4:
+    case 5:
+    case 6:
+      sprintf(buffer + printed_chars, "%02d", f);
+      printed_chars += 2;
+      break;
+    case 7:
+    case 8:
+    case 9:
+      sprintf(buffer + printed_chars, "%03d", f);
+      printed_chars += 3;
+      break;
+  }
+
+  sprintf(buffer + printed_chars, ":");
+  printed_chars++;
+
+  switch (state->edacs_s_bits) {
+    case 1:
+    case 2:
+    case 3:
+      sprintf(buffer + printed_chars, "%01d", s);
+      printed_chars += 1;
+      break;
+    case 4:
+    case 5:
+    case 6:
+      sprintf(buffer + printed_chars, "%02d", s);
+      printed_chars += 2;
+      break;
+    case 7:
+    case 8:
+    case 9:
+      sprintf(buffer + printed_chars, "%03d", s);
+      printed_chars += 3;
+      break;
+  }
+
+  return printed_chars;
+}
+
 char * getLcnStatusString(int lcn)
 {
   if (lcn == 26 || lcn == 27)
@@ -71,22 +173,6 @@ unsigned long long int edacsVoteFr(unsigned long long int fr_1_4, unsigned long 
   }
 
   return msg_result & 0xFFFFFFFFFF;
-}
-
-void openWavOutFile48k (dsd_opts * opts, dsd_state * state)
-{
-  UNUSED(state);
-  SF_INFO info;
-  info.samplerate = 48000; //48k for analog output (has to match input)
-  info.channels = 1;
-  info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE;
-  opts->wav_out_f = sf_open (opts->wav_out_file, SFM_RDWR, &info);
-
-  if (opts->wav_out_f == NULL)
-  {
-    fprintf (stderr,"Error - could not open wav output file %s\n", opts->wav_out_file);
-    return;
-  }
 }
 
 //listening to and playing back analog audio
@@ -417,6 +503,7 @@ void edacs_analog(dsd_opts * opts, dsd_state * state, int afs, unsigned char lcn
     if (count > 0) fprintf (stderr, "\n");
 
   }
+
 }
 
 void edacs(dsd_opts * opts, dsd_state * state)
@@ -454,6 +541,11 @@ void edacs(dsd_opts * opts, dsd_state * state)
   {
     edacs_bit[i] = getDibit (opts, state); //getDibit returns binary 0 or 1 on GFSK signal (Edacs and PV)
   }
+
+  //if we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
+  //this is a simple quick and dirty solution to fix setting the lastsrc value to something that we don't want in event history
+  if (opts->p25_is_tuned == 1)
+    goto EDACS_END;
 
   //Each EDACS outbound frame consists of two 40-bit (28-bit data, 12-bit BCH) messages. Each message is sent three
   //times, with the middle message bitwise-inverted. We use unsigned long long int here to be safe in 32-bit cygwin (not
@@ -645,6 +737,9 @@ void edacs(dsd_opts * opts, dsd_state * state)
             }
             fprintf (stderr, " :: System ID [%04X] CC LCN [%02d]%s", system, state->edacs_cc_lcn, getLcnStatusString(lcn));
 
+            if (system != 0)
+              state->edacs_sys_id = system;
+
             //check for control channel lcn frequency if not provided in channel map or in the lcn list
             if (state->trunk_lcn_freq[state->edacs_cc_lcn-1] == 0)
             {
@@ -681,6 +776,7 @@ void edacs(dsd_opts * opts, dsd_state * state)
           fprintf (stderr, " Extended Addressing :: Site ID [%02llX][%03lld] Area [%02X][%03d]", site_id, site_id, area, area);
           fprintf (stderr, "%s", KNRM);
           state->edacs_site_id = site_id;
+          state->edacs_area_code = area;
         }
         //System Dynamic Regroup Plan Bitmap
         else if (mt2 == 0xB)
@@ -958,6 +1054,9 @@ void edacs(dsd_opts * opts, dsd_state * state)
           }
         }
 
+        //debug for analog testing
+        // is_digital = 0;
+
         //TG hold on EDACS EA -- block non-matching target, allow matching group
         if (state->tg_hold != 0 && state->tg_hold != group) sprintf (mode, "%s", "B");
         if (state->tg_hold != 0 && state->tg_hold == group) sprintf (mode, "%s", "A");
@@ -970,11 +1069,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
             //openwav file and do per call right here, should probably check as well to make sure we have a valid trunking method active (rigctl, rtl)
             if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
             {
-              sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld TG %d SRC %d.wav", datestr, timestr, state->edacs_site_id, group, source);
-              if (is_digital == 1)
-                openWavOutFile (opts, state);
-              else
-                openWavOutFile48k (opts, state);
+              if (is_digital == 1) {} //just write to already open temp file to be renamed later
+              else //close the temp 8k wav file and open as 48k
+              {
+                opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+              }
             }
 
             //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
@@ -1085,11 +1185,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
             //openwav file and do per call right here, should probably check as well to make sure we have a valid trunking method active (rigctl, rtl)
             if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
             {
-              sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld TGT %d SRC %d I-Call.wav", datestr, timestr, state->edacs_site_id, target, source);
-              if (is_digital == 1)
-                openWavOutFile (opts, state);
-              else
-                openWavOutFile48k (opts, state);
+              if (is_digital == 1) {} //just write to already open temp file to be renamed later
+              else //close the temp 8k wav file and open as 48k
+              {
+                opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+              }
             }
 
             //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
@@ -1191,11 +1292,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
             //openwav file and do per call right here, should probably check as well to make sure we have a valid trunking method active (rigctl, rtl)
             if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
             {
-              sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld SRC %d All-Call.wav", datestr, timestr, state->edacs_site_id, source);
-              if (is_digital == 1)
-                openWavOutFile (opts, state);
-              else
-                openWavOutFile48k (opts, state);
+              if (is_digital == 1) {} //just write to already open temp file to be renamed later
+              else //close the temp 8k wav file and open as 48k
+              {
+                opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+              }
             }
 
             //do condition here, in future, will allow us to use tuning methods as well, or rtl_udp as well
@@ -1370,9 +1472,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
             //openwav file and do per call right here
             if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
             {
-              sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld TG %04d SRC %05d.wav", datestr, timestr, state->edacs_site_id, group, lid);
-              if (is_digital == 0) openWavOutFile48k (opts, state); //analog at 48k
-              else                 openWavOutFile (opts, state); //digital
+              if (is_digital == 1) {} //just write to already open temp file to be renamed later
+              else //close the temp 8k wav file and open as 48k
+              {
+                opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+              }
             }
 
             if (opts->use_rigctl == 1)
@@ -1436,7 +1541,7 @@ void edacs(dsd_opts * opts, dsd_state * state)
         //Call info for state
         if (lcn != 0){state->edacs_vc_lcn = lcn;}
                       state->lasttg = target;
-                      state->lastsrc = 0;
+                      state->lastsrc = 0x800;
 
         //Call type for state
         if (is_individual_call == 0) state->edacs_vc_call_type = EDACS_IS_GROUP;
@@ -1570,7 +1675,7 @@ void edacs(dsd_opts * opts, dsd_state * state)
           if (lcn != 0){state->edacs_vc_lcn = lcn;}
                         state->lasttg = target;
                         //Alas, EDACS standard does not provide a source LID on channel updates - try to work around this on the display end instead
-                        state->lastsrc = 0;
+                        state->lastsrc = 0x800;
 
           //Call type for state
                                       state->edacs_vc_call_type  = EDACS_IS_VOICE;
@@ -1623,10 +1728,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
               //openwav file and do per call right here
               if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
               {
-                if (is_individual == 0) sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld TG %04d SRC %05d.wav", datestr, timestr, state->edacs_site_id, target, state->lastsrc);
-                else                    sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld TGT %05d SRC %05d I-Call.wav", datestr, timestr, state->edacs_site_id, target, state->lastsrc);
-                if (is_digital == 0) openWavOutFile48k (opts, state); //analog at 48k
-                else                 openWavOutFile (opts, state); //digital
+                if (is_digital == 1) {} //just write to already open temp file to be renamed later
+                else //close the temp 8k wav file and open as 48k
+                {
+                  opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                  opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+                }
               }
 
               if (opts->use_rigctl == 1)
@@ -1734,9 +1841,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
               //openwav file and do per call right here
               if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
               {
-                sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld TGT %05d SRC %05d I-Call.wav", datestr, timestr, state->edacs_site_id, target, state->lastsrc);
-                if (is_digital == 0) openWavOutFile48k (opts, state); //analog at 48k
-                else                 openWavOutFile (opts, state); //digital
+                if (is_digital == 1) {} //just write to already open temp file to be renamed later
+                else //close the temp 8k wav file and open as 48k
+                {
+                  opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                  opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+                }
               }
 
               if (opts->use_rigctl == 1)
@@ -2027,9 +2137,12 @@ void edacs(dsd_opts * opts, dsd_state * state)
                 //openwav file and do per call right here
                 if (opts->dmr_stereo_wav == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == 3))
                 {
-                  sprintf (opts->wav_out_file, "./WAV/%s %s EDACS Site %lld SRC %05d All-Call.wav", datestr, timestr, state->edacs_site_id, state->lastsrc);
-                  if (is_digital == 0) openWavOutFile48k (opts, state); //analog at 48k
-                  else                 openWavOutFile (opts, state); //digital
+                  if (is_digital == 1) {} //just write to already open temp file to be renamed later
+                  else //close the temp 8k wav file and open as 48k
+                  {
+                    opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+                    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 48000, 0);
+                  }
                 }
 
                 if (opts->use_rigctl == 1)
@@ -2135,6 +2248,7 @@ void edacs(dsd_opts * opts, dsd_state * state)
 
   }
 
+  EDACS_END:
 
   if (timestr != NULL)
   {
@@ -2149,12 +2263,28 @@ void edacs(dsd_opts * opts, dsd_state * state)
 
   fprintf (stderr, "\n");
 
+  //when on a CC, rotate the symbol out file every hour, if enabled
+  rotate_symbol_out_file(opts, state);
+
 }
 
 void eot_cc(dsd_opts * opts, dsd_state * state)
 {
 
   fprintf (stderr, "EOT; \n");
+
+  //watchdog event at this point
+  state->lastsynctype = 38; 
+  watchdog_event_history(opts, state, 0);
+  watchdog_event_current(opts, state, 0);
+
+  //close and rename wav file here, then open a new one
+  if (opts->dmr_stereo_wav == 1)
+  {
+    if (opts->wav_out_f != NULL)
+      opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+    opts->wav_out_f  = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
+  }
 
   //set here so that when returning to the CC, it doesn't go into an immediate hunt if not immediately acquired
   state->last_cc_sync_time = time(NULL);

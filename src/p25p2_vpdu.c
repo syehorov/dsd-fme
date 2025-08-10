@@ -214,7 +214,7 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 			freq = process_channel_to_freq (opts, state, channel);
 
 			//add active channel to string for ncurses display
-			sprintf (state->active_channel[0], "MFID90 Active Ch: %04X SG: %d ", channel, sgroup);
+			sprintf (state->active_channel[0], "MFID90 Active Ch: %04X SG: %d; ", channel, sgroup);
 			state->last_active_time = time(NULL);
 
 			for (int i = 0; i < state->group_tally; i++)
@@ -1760,6 +1760,9 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 					fprintf (stderr, "%02llX", MAC[i+len_a]);
 			}
 
+			//assign here so we don't read an extra opcode value, like MAC Release on FL-DCC-1 (0x31 opcode)
+			len_b = len;
+
 		}
 
 		//This is now confirmed to have the Harris Talker GPS, but the structure is unusual compared to other MFID messages,
@@ -2044,6 +2047,7 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 			int src = (MAC[6+len_a] << 16) | (MAC[7+len_a] << 8) | MAC[8+len_a];
 			fprintf (stderr, "\n VCH %d - Super Group %d SRC %d ", slot, gr, src);
 			fprintf (stderr, "MFID90 Group Regroup Voice");
+			state->gi[slot] = 0;
 
 			if (slot == 0)
 			{
@@ -2064,6 +2068,13 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 			int src = (MAC[7+len_a] << 16) | (MAC[8+len_a] << 8) | MAC[9+len_a];
 			fprintf (stderr, "\n VCH %d - Super Group %d SRC %d ", slot, gr, src);
 			fprintf (stderr, "MFID90 Group Regroup Voice");
+			state->gi[slot] = 0;
+
+
+			uint32_t mfid90_wacn = (MAC[10+len_a] << 16) | (MAC[11+len_a] << 8) | (MAC[12+len_a] & 0xF0);
+			mfid90_wacn >>= 4;
+			uint16_t mfid90_sys = ((MAC[12+len_a] << 16) & 0x0F00)| (MAC[12+len_a] << 8);
+			fprintf (stderr, " EXT - FQSUID: %05X:%03X.%d", mfid90_wacn, mfid90_sys, src);
 
 			if (slot == 0)
 			{
@@ -2274,6 +2285,7 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 			}
 
 			fprintf (stderr, " Group Voice");
+			state->gi[slot] = 0;
 
 			sprintf (state->call_string[slot], "   Group ");
 			if (svc & 0x80) strcat (state->call_string[slot], " Emergency  ");
@@ -2328,6 +2340,7 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 			}
 
 			fprintf (stderr, " Unit to Unit Voice");
+			state->gi[slot] = 1;
 
 			sprintf (state->call_string[slot], " Private ");
 			if (svc & 0x80) strcat (state->call_string[slot], " Emergency  ");

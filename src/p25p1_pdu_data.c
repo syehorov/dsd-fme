@@ -24,6 +24,9 @@ void p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char * rsp_string)
     else if (T == 6) sprintf (rsp_string, " NACK (Invalid User on System);");
   }
 
+  //catch all for everything else
+  else               sprintf (rsp_string, " Unknown RSP;");
+
   fprintf (stderr, " Response Packet:%s C: %X; T: %X; S: %X; ", rsp_string, C, T, S);
 
 }
@@ -285,6 +288,14 @@ uint8_t p25_decode_es_header(dsd_opts * opts, dsd_state * state, uint8_t * input
   *sap = aux_sap;
   *ptr += 13;
 
+  //append enc at this point
+  if (encrypted)
+  {
+    char ess_str[200]; memset(ess_str, 0, sizeof(ess_str));
+    sprintf (ess_str, "ALG: %02X; KID: %04X; SAP:%02X;%s", alg_id, key_id, aux_sap, aux_sap_string);
+    strcat (state->dmr_lrrp_gps[0], ess_str);
+  }
+
   return encrypted;
 
 }
@@ -339,7 +350,10 @@ void p25_decode_extended_address(dsd_opts * opts, dsd_state * state, uint8_t * i
   UNUSED(ea_sap_string);
 
   //Print to Data Call String for Ncurses Terminal
-  sprintf (state->dmr_lrrp_gps[0], "Data Call:%s SAP:%02X; LLID: %d; ", ea_sap_string, ea_sap, ea_llid);
+  state->lastsrc = ea_llid;
+  char ea_str[200]; memset(ea_str, 0, sizeof(ea_str));
+  sprintf (ea_str, "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
+  strcat (state->dmr_lrrp_gps[0], ea_str);
 
   *sap = ea_sap;
   *ptr += 12;
@@ -373,8 +387,8 @@ void p25_decode_pdu_header(dsd_opts * opts, dsd_state * state, uint8_t * input)
 
   fprintf (stderr, "%s",KGRN);
   fprintf (stderr, " P25 Data - AN: %d; IO: %d; FMT: %02X; ", an, io, fmt);
-  char sap_string[40];
-  char rsp_string[40];
+  char sap_string[40]; sprintf (sap_string, "%s", " ");
+  char rsp_string[40]; sprintf (rsp_string, "%s", " ");
   if (fmt != 3) p25_decode_sap (sap, sap_string); //decode SAP to see what kind of data we are dealing with
   else          p25_decode_rsp (class, type, status, rsp_string); //decode the response type (ack, nack, sack)
   if (sap != 61 && sap != 63) //Not too interested in viewing these on trunking control, just data packets mostly
@@ -386,6 +400,25 @@ void p25_decode_pdu_header(dsd_opts * opts, dsd_state * state, uint8_t * input)
   //Print to Data Call String for Ncurses Terminal
   if (sap != 61 && sap != 63 && fmt != 3)
     sprintf (state->dmr_lrrp_gps[0], "Data Call:%s SAP:%02X; LLID: %d; ", sap_string, sap, address);
+  else if (sap != 61 && sap != 63 && fmt == 3)
+  {
+      //watchdog the data call and make it push to event history
+      sprintf (state->dmr_lrrp_gps[0], "Data Call Response:%s LLID: %d; ", rsp_string, address);
+      state->lastsrc = 0xFFFFFF;
+      watchdog_event_datacall (opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
+      state->lastsrc = 0;
+      state->lasttg = 0;
+      watchdog_event_history(opts, state, 0);
+      watchdog_event_current(opts, state, 0);
+  }
+
+  //following is for a continued PDU and not a response nor a trunking message
+  if (sap != 61 && sap != 63) //trunking blocks, don't set address (LID)
+  {
+    state->lasttg = address;
+    state->lastsrc = 0xFFFFFF; //none given, unless extended, so put any here for now
+  }
+  
 }
 
 //user or other data delivered via PDU format
@@ -425,7 +458,7 @@ void p25_decode_pdu_data(dsd_opts * opts, dsd_state * state, uint8_t * input, in
       decode_ip_pdu (opts, state, len+1, input+ptr);
 
     else if (sap == 48) //Tier 1 Location Service (or does it depend on the io bit?)
-      utf8_to_text(state, 0, len-ptr+1, input+ptr); //TODO, read initial string, i.e., $GPRMC and properly decode
+      utf8_to_text(state, 1, len-ptr+1, input+ptr); //TODO, read initial string, i.e., $GPRMC and properly decode
 
     // else //default catch all (debug only)
     // {
@@ -438,5 +471,12 @@ void p25_decode_pdu_data(dsd_opts * opts, dsd_state * state, uint8_t * input, in
   {
     fprintf (stderr, " Encrypted PDU;");
   }
+
+  //watchdog the data call and make it push to event history
+  watchdog_event_datacall (opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
+  state->lastsrc = 0;
+  state->lasttg = 0;
+  watchdog_event_history(opts, state, 0);
+  watchdog_event_current(opts, state, 0);
 
 }

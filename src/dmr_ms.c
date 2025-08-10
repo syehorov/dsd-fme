@@ -274,6 +274,10 @@ void dmrMS (dsd_opts * opts, dsd_state * state)
 
   if (vc == 6)
   {
+    //this needs to run prior to embedded link control
+    if (state->payload_algid == 0x02)
+        hytera_enhanced_alg_refresh(state);
+    
     dmr_data_burst_handler(opts, state, (uint8_t *)dummy_bits, 0xEB);
     //check the single burst/reverse channel opportunity
     dmr_sbrc (opts, state, power);
@@ -309,6 +313,10 @@ void dmrMS (dsd_opts * opts, dsd_state * state)
   {
     ncursesPrinter(opts, state);
   }
+
+  //slot 1
+  watchdog_event_history(opts, state, 0);
+  watchdog_event_current(opts, state, 0);
 
  } // end loop
 

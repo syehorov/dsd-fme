@@ -18,6 +18,9 @@ void processTSBK(dsd_opts * opts, dsd_state * state)
   memset (state->s_r4, 0, sizeof(state->s_r4));
   opts->slot_preference = 2;
 
+  //push current slot to 0, just in case swapping p2 to p1
+  //or stale slot value from p2 and then decoding a pdu
+  state->currentslot = 0;
 
   //reset some strings when returning from a call in case they didn't get zipped already
   sprintf (state->call_string[0], "%s", "                     "); //21 spaces
@@ -664,4 +667,8 @@ void processTSBK(dsd_opts * opts, dsd_state * state)
 
   fprintf (stderr, "%s ", KNRM);
   fprintf (stderr, "\n");
+
+  //when on a CC, rotate the symbol out file every hour, if enabled
+  rotate_symbol_out_file(opts, state);
+
 }

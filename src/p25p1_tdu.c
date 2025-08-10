@@ -9,6 +9,11 @@
 void
 processTDU (dsd_opts* opts, dsd_state* state)
 {
+
+    //push current slot to 0, just in case swapping p2 to p1
+    //or stale slot value from p2 and then decoding a pdu
+    state->currentslot = 0;
+
     AnalogSignal analog_signal_array[14];
     int status_count;
 
@@ -44,8 +49,12 @@ processTDU (dsd_opts* opts, dsd_state* state)
         state->aout_gain = opts->audio_gain;
 
     //zero out MI, key, alg
-    state->payload_miP = 0;
-    state->payload_algid = 0;
-    state->payload_keyid = 0;
+    // state->payload_miP = 0;
+    // state->payload_algid = 0;
+    // state->payload_keyid = 0;
+
+    // state->lasttg = 0;
+    // state->lastsrc = 0;
+    // state->gi[0] = -1;
 
 }

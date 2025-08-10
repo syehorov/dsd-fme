@@ -729,6 +729,15 @@ void process_ESS (dsd_opts * opts, dsd_state * state)
 					state->group_tally++;
 				}
 
+				//run a watchdog here so we can update this with the crypto variables and ENC LO
+				//may need to disable this for same reason as below
+        if (ttg != 0 && enc_wr == 0)
+        {
+					uint8_t slot = state->currentslot; //need to make sure we can verify the slot accuracy on SACCH slots (inverted)
+          sprintf (state->event_history_s[slot].Event_History_Items[0].internal_str, "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+          watchdog_event_current(opts, state, slot);
+        }
+
 				//return to the control channel -- NOTE: Disabled, just mark as lockout for now, return would require complex check of the other slot activity
 				// fprintf (stderr, " No Enc Following on P25p2 Trunking; Return to CC; \n");
 				// return_to_cc (opts, state);
@@ -961,6 +970,10 @@ void process_P2_DUID (dsd_opts * opts, dsd_state * state)
 		{
 			// sacch = 1; //only an 'inverted' slot when its TS index 10 or 11
 			fprintf (stderr, "LCCH  ");
+
+			//when on a CC, rotate the symbol out file every hour, if enabled
+			if (opts->p25_is_tuned == 0)
+  			rotate_symbol_out_file(opts, state);
 		}
 		else if (duid_decoded == 4) //Scrambled LCCH (TDMA_CC only...look in the manual again)
 		{
@@ -1075,10 +1088,10 @@ void process_P2_DUID (dsd_opts * opts, dsd_state * state)
 			state->payload_keyid = 0;
 			state->payload_algidR = 0;
 			state->payload_keyidR = 0;
-			state->lastsrc = 0;
-			state->lastsrcR = 0;
-			state->lasttg = 0;
-			state->lasttgR = 0;
+			// state->lastsrc = 0; //disable?
+			// state->lastsrcR = 0; //disable?
+			// state->lasttg = 0; //disable?
+			// state->lasttgR = 0; //disable?
 			state->p2_is_lcch = 0;
 			state->fourv_counter[0] = 0;
 			state->fourv_counter[1] = 0;
@@ -1092,6 +1105,15 @@ void process_P2_DUID (dsd_opts * opts, dsd_state * state)
 		{
 			ncursesPrinter(opts, state);
 		}
+
+		//slot 1
+		watchdog_event_history(opts, state, 0);
+		watchdog_event_current(opts, state, 0);
+
+		//slot 2 for TDMA systems
+		watchdog_event_history(opts, state, 1);
+		watchdog_event_current(opts, state, 1);
+
 		//add 360 bits to each counter
 		vc_counter = vc_counter + 360;
 

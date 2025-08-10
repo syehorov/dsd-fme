@@ -132,7 +132,7 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
     udt_uab += 1; //add 1 internally, up to 4 appended blocks are carried, min is 1
 
     //NMEA Specific Fix for unspecified MFID format w/ 2 appended blocks (UAB 2) p291
-    if (udt_uab == 0x5 && udt_uab == 3)
+    if (udt_format == 0x5 && udt_uab == 3)
       udt_uab = 2; //set to two if long unspecified format
 
     //Note: NMEA Reserved value UAB 3 is not referenced in ETSI, so unknown number of
@@ -260,25 +260,33 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
 
     }
 
-    if (dpf == 1) //response data packet header
+    if (dpf == 1) //response data packet header //TODO: Convert to something more similar to P25 variant
     {
       //mostly fleshed out response packet info
-      fprintf (stderr, "\n  SAP %02d [%s] - Class %d - Type %0d - ", sap, sap_string, r_class, r_type);
-      if (r_class == 0 && r_type == 1) fprintf (stderr, "ACK - Success");
+      char rsp_string[200]; memset(rsp_string, 0, sizeof(rsp_string));
+      sprintf (rsp_string, "DATA RESP TGT: %d; SRC: %d; ", target, source);
+      if (r_class == 0 && r_type == 1) strcat (rsp_string, "ACK - Success");
       if (r_class == 1)
       {
-        fprintf (stderr, "NACK - ");
-        if (r_type == 0) fprintf (stderr, "Illegal Format");
-        if (r_type == 1) fprintf (stderr, "Illegal Format");
-        if (r_type == 2) fprintf (stderr, "Packet CRC ERR");
-        if (r_type == 3) fprintf (stderr, "Memory Full");
-        if (r_type == 4) fprintf (stderr, "FSN Out of Seq");
-        if (r_type == 5) fprintf (stderr, "Undeliverable");
-        if (r_type == 6) fprintf (stderr, "PKT Out of Seq");
-        if (r_type == 7) fprintf (stderr, "Invalid User");
+        strcat (rsp_string, "NACK - ");
+        if (r_type == 0) strcat (rsp_string, "Illegal Format");
+        if (r_type == 1) strcat (rsp_string, "Illegal Format");
+        if (r_type == 2) strcat (rsp_string, "Packet CRC ERR");
+        if (r_type == 3) strcat (rsp_string, "Memory Full");
+        if (r_type == 4) strcat (rsp_string, "FSN Out of Seq");
+        if (r_type == 5) strcat (rsp_string, "Undeliverable");
+        if (r_type == 6) strcat (rsp_string, "PKT Out of Seq");
+        if (r_type == 7) strcat (rsp_string, "Invalid User");
       }
-      if (r_class == 2) fprintf (stderr, "SACK - Retry");
-      if (r_status) fprintf (stderr, " - %d", r_status); //the object/value of the ack/nack/sack
+      if (r_class == 2) strcat (rsp_string, "SACK - Retry");
+      // if (r_status) strcat (rsp_string, " - %d", r_status);
+      UNUSED(r_status);
+
+      fprintf (stderr, "\n %s", rsp_string);
+
+      //REMUS, enable (or disable) next two lines is you want to //
+      // sprintf (state->dmr_lrrp_gps[slot], "%s; ", rsp_string);
+      // watchdog_event_datacall (opts, state, source, target, state->dmr_lrrp_gps[slot], slot);
 
     }
 
@@ -494,7 +502,7 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
   UNUSED(cs_bits);
 
   //bytes to bits
-  for(i = 0, j = 0; i < 36; i++, j+=8)
+  for(i = 0, j = 0; i < 60; i++, j+=8)
   {
     cs_bits[j + 0] = (block_bytes[i] >> 7) & 0x01;
     cs_bits[j + 1] = (block_bytes[i] >> 6) & 0x01;
@@ -553,6 +561,10 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
   //LIP Debug Testing (need real world samples)
   // udt_format2 = 0x0B;
 
+  //WIP: Add this to event history //TODO: Double check len values on Text Messages
+  char udt_string[500]; memset (udt_string, 0, sizeof(udt_string));
+  sprintf (udt_string, "UDT SRC: %d; TGT: %d; ", udt_source, udt_target);
+
   //initial linebreak
   fprintf (stderr, "%s", KCYN);
   fprintf (stderr, "\n ");
@@ -561,10 +573,12 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
   if (udt_format2 == 0x00)
   {
     fprintf (stderr, "Binary Data;");
+    strcat (udt_string, "Binary Data; ");
   }
   else if (udt_format2 == 0x01) //appended addresses
   {
     fprintf (stderr, "Appended Addressing;\n ");
+    strcat (udt_string, "Appended Addressing; ");
     if (udt_uab == 1) end = 3;
     if (udt_uab == 2) end = 7;
     if (udt_uab == 3) end = 11;
@@ -586,6 +600,7 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
     end -= udt_padnib; //subtract padnib since its also 4 bits
 
     fprintf (stderr, "Dialer BCD: ");
+    strcat (udt_string, "Dialer Digits: ");
     for (i = 0; i < end; i++)
     {
       //dialer digits 7.2.9
@@ -595,6 +610,20 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
       else if (digit == 11) fprintf (stderr, "#"); //pound/hash
       else if (digit == 15) fprintf (stderr, " "); //null character
       else fprintf (stderr, "R:%X", digit); //reserved values on 12,13, and 14
+
+      char dc[2]; dc[1] = 0;
+      if (digit < 10)
+        dc[0] = digit + 0x30;
+      else if (digit == 10)
+        dc[0] = 0x2A;
+      else if (digit == 11)
+        dc[0] = 0x23;
+      else if (digit == 15)
+        dc[0] = 0x20;
+      else //if 12, 13, 14, convert to its HEX letter representative C, D, or E
+        dc[0] = digit + 0x38;
+      
+      strcat (udt_string, dc);
     }
   }
   else if (udt_format2 == 0x03) //ISO7 format
@@ -603,29 +632,44 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
     if (udt_uab == 2) end = 25;
     if (udt_uab == 3) end = 38;
     if (udt_uab == 4) end = 52;
-    end -= udt_padnib/7; //is this correct?
+    end -= udt_padnib/2; //this may be more complex since its 7, so /7 and then if %7, add +1?
     fprintf (stderr, "ISO7 Text: "  );
+    strcat (udt_string, "ISO7 Text; ");
+    // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
+    sprintf (state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
     for (i = 0; i < end; i++) //max 368/7 = 52 character max?
     {
       iso7c = (uint8_t)ConvertBitIntoBytes(&cs_bits[(i*7)+96], 7);
+      char i7c[2]; i7c[0] = iso7c; i7c[1] = 0;
       if (iso7c >= 0x20 && iso7c <= 0x7E) //Standard ASCII Set
+      {
         fprintf (stderr, "%c", iso7c);
+        strcat (state->event_history_s[slot].Event_History_Items[0].text_message, i7c);
+      }
       else fprintf (stderr, " ");
     }
   }
   else if (udt_format2 == 0x04) //ISO8 format
   {
     fprintf (stderr, "ISO8 Text: "  );
+    strcat (udt_string, "ISO8 Text; ");
+    sprintf (state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
     if (udt_uab == 1) end = 10;
     if (udt_uab == 2) end = 22;
     if (udt_uab == 3) end = 34;
     if (udt_uab == 4) end = 46;
-    end -= udt_padnib/8; //is this correct?
+    end -= udt_padnib/2; //just going with /2 so that its 2*nib = byte format (might cut off last, not sure?)
+    // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
     for (i = 0; i < end; i++)
     {
       iso8c = (uint8_t)ConvertBitIntoBytes(&cs_bits[(i*8)+96], 8);
+      char i8c[2]; i8c[0] = iso8c; i8c[1] = 0; 
       if (iso8c >= 0x20 && iso8c <= 0x7E) //Standard ASCII Set
+      {
         fprintf (stderr, "%c", iso8c);
+        strcat (state->event_history_s[slot].Event_History_Items[0].text_message, i8c);
+      }
+        
       // else if (iso8c >= 0x81 && iso8c <= 0xFE) //Extended ASCII Set
       //   fprintf (stderr, "%c", iso8c);
       else fprintf (stderr, " ");
@@ -637,13 +681,22 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
     if (udt_uab == 2) end = 11;
     if (udt_uab == 3) end = 17;
     if (udt_uab == 4) end = 23;
-    end -= udt_padnib/4; //example, 4 blocks sets 23 - (20nibs/4bits) = 18 chars, may need to check this again
+    end -= udt_padnib/4;
     fprintf (stderr, "UTF16 Text: "  );
+    // fprintf (stderr, " pad: %d; end: %d;", udt_padnib, end); //debug
+    strcat (udt_string, "UTF16 Text; ");
+    sprintf (state->event_history_s[slot].Event_History_Items[0].text_message, "%s", " ");
     for (i = 0; i < end; i++) //368/16 = 23 character max?
     {
       utf16c = (uint16_t)ConvertBitIntoBytes(&cs_bits[(i*16)+96], 16);
+      char u16[2]; u16[0] = utf16c & 0xFF; u16[1] = 0;
       if (utf16c >= 0x20 && utf16c != 0x7F) //avoid control chars
+      {
         fprintf (stderr, "%lc", utf16c); //will using lc work here? May depend on console locale settings?
+        if (utf16c >= 0x20 && utf16c < 0x7F)
+          strcat (state->event_history_s[slot].Event_History_Items[0].text_message, u16);
+      }
+        
       else fprintf (stderr, " ");
     }
   }
@@ -656,6 +709,7 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
       fprintf (stderr, "%d.",(uint8_t)ConvertBitIntoBytes(&cs_bits[96+8], 8));
       fprintf (stderr, "%d.",(uint8_t)ConvertBitIntoBytes(&cs_bits[96+16], 8));
       fprintf (stderr, "%d", (uint8_t)ConvertBitIntoBytes(&cs_bits[96+24], 8));
+      strcat (udt_string, "IP4; ");
     }
     else //IP6
     {
@@ -664,10 +718,11 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
       fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+16], 16));
       fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+32], 16));
       fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+48], 16));
-      fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+56], 16));
-      fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+72], 16));
-      fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+88], 16));
-      fprintf (stderr, "%04X", (uint16_t)ConvertBitIntoBytes(&cs_bits[96+104], 16));
+      fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+64], 16));
+      fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+80], 16));
+      fprintf (stderr, "%04X:",(uint16_t)ConvertBitIntoBytes(&cs_bits[96+96], 16));
+      fprintf (stderr, "%04X", (uint16_t)ConvertBitIntoBytes(&cs_bits[96+112], 16));
+      strcat (udt_string, "IP6; ");
     }
   }
   else if (udt_format2 == 0x0A) //Mixed Address/UTF-16BE
@@ -676,14 +731,22 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
     if (udt_uab == 2) end = 9;
     if (udt_uab == 3) end = 15;
     if (udt_uab == 4) end = 21;
-    end -= udt_padnib/4; //is this correct?
-    fprintf (stderr, "Address: %d", (uint32_t)ConvertBitIntoBytes(&cs_bits[96+8], 24));
-    fprintf (stderr, "Text: "  );
+    end -= udt_padnib/4;
+    fprintf (stderr, "Address: %d; ", (uint32_t)ConvertBitIntoBytes(&cs_bits[96+8], 24));
+    fprintf (stderr, "UTF16 Text: "  );
+    strcat (udt_string, "Mixed Add/Text; ");
+    sprintf (state->event_history_s[slot].Event_History_Items[0].text_message, "Address: %d;", (uint32_t)ConvertBitIntoBytes(&cs_bits[96+8], 24));
     for (i = 0; i < end; i++) //368/16 = 21 character max
     {
-      utf16c = (uint16_t)ConvertBitIntoBytes(&cs_bits[(i*16)+96], 16);
+      utf16c = (uint16_t)ConvertBitIntoBytes(&cs_bits[(i*16)+96+32], 16);
+      char u16[2]; u16[0] = utf16c & 0xFF; u16[1] = 0;
       if (utf16c >= 0x20 && utf16c != 0x7F) //avoid control chars
+      {
         fprintf (stderr, "%lc", utf16c);
+        if (utf16c >= 0x20 && utf16c < 0x7F)
+          strcat (state->event_history_s[slot].Event_History_Items[0].text_message, u16);
+      }
+        
       else fprintf (stderr, " ");
     }
   }
@@ -691,6 +754,7 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
   {
     //Would be nice to be able to test these all out to make sure the conditions are okay, etc
     fprintf (stderr, "NMEA"  );
+    strcat (udt_string, "NMEA; ");
     if (cs_bits[96] == 1) //check if its encrypted first
       fprintf (stderr, " Encrypted Format :("  ); //sad face
     else if (udt_uab == 1)
@@ -708,6 +772,7 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
     //unsure of how this is structured for UDT Blocks, would assume one appended block of same format
     //but could also be full blown LIP protocol that is also found in tetra that would require the PDU
     //type bit to be read and then to decode accordingly, this assumes its the modified Short PDU that USBD uses
+    strcat (udt_string, "LIP; ");
     fprintf (stderr, "\n");
     lip_protocol_decoder (opts, state, cs_bits+96); //start on first appended block, and not header
 
@@ -716,13 +781,39 @@ void dmr_udt_decoder (dsd_opts * opts, dsd_state * state, uint8_t * block_bytes,
   {
     fprintf (stderr, "MFID SPEC %02X: ", udt_format2);
     //use -Z to expose this
+    strcat (udt_string, "MFID Specific; ");
   }
   else
   {
     fprintf (stderr, "Reserved %02X: ", udt_format2);
+    strcat (udt_string, "Reserved; ");
     //use -Z to expose this
   }
   fprintf (stderr, "%s", KNRM);
+
+  if (slot == 0)
+  {
+    state->lastsrc = udt_source;
+    state->lasttg = udt_target;
+  }
+  else
+  {
+    state->lastsrcR = udt_source;
+    state->lasttgR = udt_target;
+  }
+  watchdog_event_datacall (opts, state, udt_source, udt_target, udt_string, slot);
+  if (slot == 0)
+  {
+    state->lastsrc = 0;
+    state->lasttg = 0;
+  }
+  else
+  {
+    state->lastsrcR = 0;
+    state->lasttgR = 0;
+  }
+  watchdog_event_history(opts, state, slot);
+  watchdog_event_current(opts, state, slot);
 }
 
 //assemble the blocks as they come in, shuffle them into the unified dmr_pdu_sf
@@ -1026,21 +1117,21 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
           }
         }
 
-        //reset alg/keyid/mi
-        if (state->currentslot == 0)
-        {
-          state->payload_mi = 0;
-          state->payload_algid = 0;
-          state->payload_keyid = 0;
-          state->dmr_so = 0;
-        }
-        else
-        {
-          state->payload_miR = 0;
-          state->payload_algidR = 0;
-          state->payload_keyidR = 0;
-          state->dmr_soR = 0;
-        }
+        //reset alg/keyid/mi //TD_LC should "SHOULD" catch this
+        // if (state->currentslot == 0)
+        // {
+        //   state->payload_mi = 0;
+        //   state->payload_algid = 0;
+        //   state->payload_keyid = 0;
+        //   state->dmr_so = 0;
+        // }
+        // else
+        // {
+        //   state->payload_miR = 0;
+        //   state->payload_algidR = 0;
+        //   state->payload_keyidR = 0;
+        //   state->dmr_soR = 0;
+        // }
 
       } //end enc check
       #endif
@@ -1050,8 +1141,23 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
       if (enc_check == 1 && decrypted_pdu == 0) //check for encryption and if it was decrypted first or not
       {
         fprintf (stderr, "%s", KRED);
-        fprintf (stderr, "\n Slot %d - Encrypted Data Packet;", slot+1);
+        fprintf (stderr, "\n Slot %d - Encrypted PDU;", slot+1);
         fprintf (stderr, "%s", KNRM);
+
+        uint8_t alg = 0;
+        uint8_t kid = 0;
+        if (slot == 0)
+          alg = state->payload_algid;
+        else alg = state->payload_algidR;
+
+        if (slot == 0)
+          kid = state->payload_keyid;
+        else kid = state->payload_keyidR;
+
+        char enc_str[200]; memset (enc_str, 200, sizeof(enc_str));
+        sprintf (enc_str, "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;", state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], alg, kid);
+        sprintf (state->dmr_lrrp_gps[slot], "%s", enc_str);
+        watchdog_event_datacall (opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], enc_str, slot);
       }
       else if (CRCCorrect || opts->aggressive_framesync == 0)
       {
@@ -1107,7 +1213,29 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
             dmr_lrrp (opts, state, len, msrc, mdst, state->dmr_pdu_sf[slot]+7);
           else if (mnis_type == 0x33) //check any potential texts in this message
             utf8_to_text(state, 0, 15, state->dmr_pdu_sf[slot]+7); //seen some ARS radio IDs in ASCII/ISO7/UTF8 format here
+          else if (mnis_type == 0x01) //nothing to test this with
+          {
+            utf8_to_text(state, 0, len-offset, state->dmr_pdu_sf[slot]+7);
+            dmr_locn(opts, state, len, state->dmr_pdu_sf[slot]+7);
+            sprintf (state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_lrrp_gps[slot]);
+          }
 
+          //dump to event history
+          if (mnis_type != 0x11 && mnis_type != 0x01) //if not LRRP or LOCN
+          {
+            char mnis_str[200]; memset (mnis_str, 200, sizeof(mnis_str));
+            sprintf (mnis_str, "MNIS TGT: %lld; SRC: %lld;", state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot]);
+            watchdog_event_datacall (opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], mnis_str, slot);
+          }
+          else if (mnis_type == 0x11 || mnis_type == 0x01) //LRRP or LOCN
+            watchdog_event_datacall (opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], state->dmr_lrrp_gps[slot], slot);
+
+        }
+        else
+        {
+          char unk_str[200]; memset (unk_str, 200, sizeof(unk_str));
+          sprintf (unk_str, "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot]);
+          watchdog_event_datacall (opts, state, state->dmr_lrrp_source[slot], state->dmr_lrrp_target[slot], unk_str, slot);
         }
       }
 
@@ -1234,7 +1362,7 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
           mbc_block_bits[i] = dmr_pdu_sf_bits[i+96]; //skip udt header
         }
       }
-
+      //there was a bug built into ComputeCrcCCITT16d where len was uint8_t, so len could never exceed 255
       CRCComputed = ComputeCrcCCITT16d (mbc_block_bits, ((blocks+0)*96)-16 );
 
       if (CRCComputed == CRCExtracted) mbc_crc_good[1] = 1;
@@ -1255,7 +1383,7 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
 
         //debug print
         fprintf (stderr, " %X - %X", CRCExtracted, CRCComputed);
-
+        // fprintf (stderr, " Len: %d", ((blocks+0)*96)-16);
         fprintf (stderr, "%s", KNRM);
       }
 
@@ -1361,7 +1489,7 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
 void dmr_reset_blocks (dsd_opts * opts, dsd_state * state)
 {
   UNUSED(opts);
-
+  memset (state->gi, -1, sizeof(state->gi));
   memset (state->data_p_head, 0, sizeof(state->data_p_head));
   memset (state->data_conf_data, 0, sizeof(state->data_conf_data));
   memset (state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));

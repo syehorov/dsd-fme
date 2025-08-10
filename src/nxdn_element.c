@@ -139,9 +139,11 @@ void NXDN_Elements_Content_decode(dsd_opts * opts, dsd_state * state,
       break;
 
     //VCALL, TX_REL_EXT and TX_REL
-    case 0x01:
-    case 0x07:
-    case 0x08:
+    case 0x07: //TX_REL_EXT
+    case 0x08: //TX_REL
+      sprintf (state->call_string[0], "%s", "");
+      sprintf (state->nxdn_call_type, "%s", "");
+    case 0x01: //VCALL
       NXDN_decode_VCALL(opts, state, ElementsContent);
       break;
 
@@ -149,6 +151,8 @@ void NXDN_Elements_Content_decode(dsd_opts * opts, dsd_state * state,
     case 0x11:
       NXDN_decode_VCALL(opts, state, ElementsContent);
       memset (state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+      sprintf (state->call_string[0], "%s", "");
+      sprintf (state->nxdn_call_type, "%s", "");
 
       // #ifdef LIMAZULUTWEAKS
       // ; //do nothing -- testing errors on CAC messages when returning quickly from RTCH
@@ -647,6 +651,16 @@ void NXDN_decode_VCALL_ASSGN(dsd_opts * opts, dsd_state * state, uint8_t * Messa
         state->nxdn_last_tg = DestinationID;
         sprintf (state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(CallType));
 
+        if (CallType == 3)
+        {
+          state->gi[0] = 1; //Private Call
+          //unassign these, sometimes, when trunking, these may be reversed by the time listened,
+          //and this will plant an extra private call in the event_history
+          state->nxdn_last_rid = 0;
+          state->nxdn_last_tg = 0;
+        }
+        else state->gi[0] = 0; //Group Call
+
         //Call String for Per Call WAV File
         sprintf (state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
         if (CCOption & 0x80) strcat (state->call_string[0], " Emergency");
@@ -684,6 +698,16 @@ void NXDN_decode_VCALL_ASSGN(dsd_opts * opts, dsd_state * state, uint8_t * Messa
           state->nxdn_last_rid = SourceUnitID;
         state->nxdn_last_tg = DestinationID;
         sprintf (state->nxdn_call_type, "%s", NXDN_Call_Type_To_Str(CallType));
+
+        if (CallType == 3)
+        {
+          state->gi[0] = 1; //Private Call
+          //unassign these, sometimes, when trunking, these may be reversed by the time listened,
+          //and this will plant an extra private call in the event_history
+          state->nxdn_last_rid = 0;
+          state->nxdn_last_tg = 0;
+        }
+        else state->gi[0] = 0; //Group Call
 
         //Call String for Per Call WAV File
         sprintf (state->call_string[0], "%s", NXDN_Call_Type_To_Str(CallType));
@@ -745,9 +769,11 @@ void NXDN_decode_Alias(dsd_opts * opts, dsd_state * state, uint8_t * Message)
 
   char str_a[120]; char str_b[50];
 
+  //TODO: Revisit the debug here and see if anythign comes out of it,
+  //maybe go on the assumptiont his works very similar to DMR talker alias
   //debug/test
-  // fprintf (stderr, " U1: %02X U2: %02X;", unk1, unk2);
-  // fprintf (stderr, " A:%d/%d; ", blocknumber, total);
+  // fprintf (stderr, " U1: %02X U2: %02X;", unk1, unk2); //these always appear to be the same two byte values, even across different systems and languages
+  // fprintf (stderr, " A:%d/%d; ", blocknumber, total); //this is accurate info here
 
   //sanity check to prevent OOB array assignment
   if (blocknumber > 0 && blocknumber < 4) //last 'block' may have been assigning garbage name values -- I'm honestly not sure block'4' contains Alias data, but other data or something
@@ -779,12 +805,8 @@ void NXDN_decode_Alias(dsd_opts * opts, dsd_state * state, uint8_t * Message)
     //juggle strings here so we don't get compiler warnings on assignment size
     memcpy (str_b, str_a, 48); str_b[49] = '\0';
 
-    //one noteable issue is that on conventional, its possible to decode an alias before decong the src id
-    //just depends on reception and if VCALL is decoded before Alias, this will lead to alias being assigned
-    //to incorrect src values or placement in the ncurses terminal's call history section
-
-    if (state->nxdn_last_rid != 0)
-      sprintf (state->str50a, "%s", str_b);
+    sprintf (state->generic_talker_alias[0], "%s", str_b);
+    sprintf (state->event_history_s[0].Event_History_Items[0].alias, "%s; ", str_b);
 
   }
 
@@ -1258,17 +1280,64 @@ void NXDN_decode_VCALL(dsd_opts * opts, dsd_state * state, uint8_t * Message)
 
   fprintf (stderr, "%s", KNRM);
 
-  //check the rkey array for a scrambler key value
-  //check by keyid first, then by tgt id
-  //TGT ID and Key ID could clash though if csv or system has both with different keys
-  if (state->rkey_array[KeyID] != 0) state->R = state->rkey_array[KeyID];
-  else if (state->rkey_array[DestinationID] != 0) state->R = state->rkey_array[DestinationID];
+  //if using the keyloader, then check for a key value first by the key id,
+  //and then if not available, check by the destination (TG) id value
+  //also, for DES and AES, set the nxdn_key varialbe to the DestID for IV and KS gen
+  if (state->keyloader == 1)
+  {
+    //if Scrambler Key (and not running NXDN96 since that has VCALL in the non-voice frames)
+    //NOTE: The scrambler seed carries on the state->R variable so that will reset incorrectly on NXDN96
+    //NOTE: Observed on system with scrambler and AES keys on same TG, disabling loading DES and AES key by DestID
+    if (CipherType == 1 && opts->frame_nxdn48 == 1 && opts->frame_nxdn96 == 0)
+    {
+      if (state->rkey_array[KeyID] != 0) state->R = state->rkey_array[KeyID];
+      else if (state->rkey_array[DestinationID] != 0) state->R = state->rkey_array[DestinationID];
+    }
 
-  //Don't zero key if no keyloader, if we need this, do it when its nots NXDN96, causes issue when 96 VCALL comes in on all data frames
-  // if (CipherType != 0x1 && state->keyloader == 1) state->R = 0; //what did this do again? for mont system or something?
+    //if DES Key
+    else if (CipherType == 2)
+    {
+      if (state->rkey_array[KeyID] != 0) state->R = state->rkey_array[KeyID];
+      // else if (state->rkey_array[DestinationID] != 0)
+      // {
+      //   state->R = state->rkey_array[DestinationID];
+      //   state->nxdn_key = DestinationID;
+      // }
+    }
 
-  //safe alternative?
-  if (CipherType == 0 && state->keyloader == 1) state->R = 0;
+    //if AES Key
+    else if (CipherType == 3)
+    {
+      uint32_t kidx = 0;
+      if (state->rkey_array[KeyID] != 0) kidx = KeyID;
+      // else if (state->rkey_array[DestinationID] != 0) 
+      // {
+      //   kidx = DestinationID;
+      //   state->nxdn_key = DestinationID;
+      // }
+
+      state->A1[0] = state->rkey_array[kidx+0x000];
+      state->A2[0] = state->rkey_array[kidx+0x101];
+      state->A3[0] = state->rkey_array[kidx+0x201];
+      state->A4[0] = state->rkey_array[kidx+0x301];
+
+      //check to see if there is a value loaded or not
+      if (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0)
+        state->aes_key_loaded[0] = 0;
+      else state->aes_key_loaded[0] = 1;
+
+      for (int i = 0; i < 8; i++)
+      {
+        state->aes_key[i+0]  = (state->A1[0] >> (56-(i*8))) & 0xFF;
+        state->aes_key[i+8]  = (state->A2[0] >> (56-(i*8))) & 0xFF;
+        state->aes_key[i+16] = (state->A3[0] >> (56-(i*8))) & 0xFF;
+        state->aes_key[i+24] = (state->A4[0] >> (56-(i*8))) & 0xFF;
+      }
+
+      state->R = state->A1[0]; //display KS stub
+    }
+
+  } //end state->keyloader == 1
 
   /* Print the "Cipher Type" */
   if(CipherType != 0 && MessageType == 0x1)
@@ -1310,17 +1379,23 @@ void NXDN_decode_VCALL(dsd_opts * opts, dsd_state * state, uint8_t * Message)
   if(MessageType == 0x1)
   {
     //only assign rid if not spare and not reserved (happens on private calls, unsure of its significance)
-    if ( (VoiceCallOption & 0xF) < 4) //ideally, only want 0, 2, or 3
+    if ( (VoiceCallOption & 0xF) < 4) //ideally, only want 0, 1, 2, 3, or 4 (or 6, 7 on telephone calls)
       state->nxdn_last_rid = SourceUnitID;
     state->nxdn_last_tg = DestinationID;
     state->nxdn_key = KeyID;
+    if (CallType == 0 || CallType == 1) //broadcast and group
+      state->gi[0] = 0;
+    else if (CallType == 4) //private
+      state->gi[0] = 1;
+    else state->gi[0] = -1; //unassigned on any other values
     state->nxdn_cipher_type = CipherType;
   }
   else
   {
     state->nxdn_last_rid = 0;
     state->nxdn_last_tg = 0;
-    sprintf (state->str50a, "%s", "");
+    state->gi[0] = -1;
+    sprintf (state->generic_talker_alias[0], "%s", "");
     memset (state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
   }
 
@@ -1363,6 +1438,13 @@ void NXDN_decode_VCALL(dsd_opts * opts, dsd_state * state, uint8_t * Message)
       sprintf (gm, "%s", "DE");
       sprintf (gn, "%s", "ENC LO");
       state->group_tally++;
+    }
+
+    //run a watchdog here so we can update this with the crypto variables and ENC LO
+    if (DestinationID != 0 && lo == 0)
+    {
+      sprintf (state->event_history_s[0].Event_History_Items[0].internal_str, "Target: %d; has been locked out; Encryption Lock Out Enabled.", DestinationID);
+      watchdog_event_current(opts, state, 0);
     }
 
     //Craft a fake DISC Message send it to return to CC

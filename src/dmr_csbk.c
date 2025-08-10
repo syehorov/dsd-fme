@@ -3,7 +3,7 @@
  * DMR Control Signal Data PDU (CSBK, MBC) Handler and Related Functions
  *
  * Portions of Connect+ code reworked from Boatbod OP25
- * Source: https://github.com/LouisErigHerve/dsd/blob/master/src/dmr_sync.c
+ * Source: https://github.com/boatbod/op25/blob/master/op25/gr-op25_repeater/lib/dmr_slot.cc
  *
  * Portions of Capacity+ code reworked from Eric Cottrell
  * Source: https://github.com/LinuxSheeple-E/dsd/blob/Feature/DMRECC/dmr_csbk.c
@@ -430,6 +430,10 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
           if (ccfreq != 0) state->p25_cc_freq = ccfreq;
         }
 
+        //when on a CC, rotate the symbol out file every hour, if enabled
+        if (opts->p25_is_tuned == 0) //if not currently tuned on Tier 3 system
+          rotate_symbol_out_file(opts, state); //may need a second check to make sure other slot on T3 standard isn't busy as well
+
       }
 
       //P_CLEAR
@@ -502,6 +506,10 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
             if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 1)
             {
 
+              //run a watchdog here so we can update this with the most recent info
+              watchdog_event_current(opts, state, 0);
+              watchdog_event_current(opts, state, 1);
+
               //display/le/buzzer bug fix when p_clear activated (unsure why this was disabled)
               //clear only the current slot initially, then clear both if tuning to a different freq
               if (state->currentslot == 0 && csbk_fid != 253) //don't reset on Cap+ since we aren't testing based on the current TS
@@ -529,11 +537,15 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
                 //clear both if tuning away to another frequency
                 if (GetCurrentFreq(opts->rigctl_sockfd) != state->p25_cc_freq)
                 {
+                  state->lastsrc = 0;
+                  state->lasttg = 0;
                   state->payload_mi = 0;
                   state->payload_algid = 0;
                   state->payload_keyid = 0;
                   state->dmr_so = 0;
 
+                  state->lastsrcR = 0;
+                  state->lasttgR = 0;
                   state->payload_miR = 0;
                   state->payload_algidR = 0;
                   state->payload_keyidR = 0;
@@ -564,11 +576,15 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
                 //clear both if tuning away to another frequency
                 if (opts->rtlsdr_center_freq != tempf)
                 {
+                  state->lastsrc = 0;
+                  state->lasttg = 0;
                   state->payload_mi = 0;
                   state->payload_algid = 0;
                   state->payload_keyid = 0;
                   state->dmr_so = 0;
 
+                  state->lastsrcR = 0;
+                  state->lasttgR = 0;
                   state->payload_miR = 0;
                   state->payload_algidR = 0;
                   state->payload_keyidR = 0;
@@ -613,7 +629,7 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
 
         if (p_kind == 0) fprintf (stderr, " Disable Target PTT (DIS_PTT)");
         if (p_kind == 1) fprintf (stderr, " Enable Target PTT (EN_PTT)");
-        if (p_kind == 2) fprintf (stderr, " Call (ILLEGALLY_PARKED)");
+        if (p_kind == 2) fprintf (stderr, " Call Hangtime (ILLEGALLY_PARKED)");
         if (p_kind == 3) fprintf (stderr, " Enable Target MS PTT (EN_PTT_ONE_MS)");
 
         fprintf (stderr, "\n");
@@ -629,11 +645,13 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
           {
             if (state->currentslot == 0) state->dmrburstL = 1;
             else state->dmrburstR = 1;
+            state->gi[state->currentslot] = 0;
           }
           if (!gi && opts->trunk_tune_private_calls == 1)
           {
             if (state->currentslot == 0) state->dmrburstL = 1;
             else state->dmrburstR = 1;
+            state->gi[state->currentslot] = 1;
           }
         }
 
@@ -700,8 +718,8 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
           uint8_t ann_res = (uint8_t)ConvertBitIntoBytes(&bpbits1[0], 4);
           uint8_t cc_ch1 = (uint8_t)ConvertBitIntoBytes(&bpbits1[4], 4);
           uint8_t cc_ch2 = (uint8_t)ConvertBitIntoBytes(&bpbits1[8], 4);
-          uint8_t ch1_flag = bpbits1[13];
-          uint8_t ch2_flag = bpbits1[14];
+          uint8_t ch1_flag = bpbits1[12];
+          uint8_t ch2_flag = bpbits1[13];
 
           uint16_t bcast_ch1 = (uint16_t)ConvertBitIntoBytes(&bpbits2[0], 12);
           uint16_t bcast_ch2 = (uint16_t)ConvertBitIntoBytes(&bpbits2[12], 12);
@@ -724,8 +742,8 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
           uint16_t t_emerg_timer = (uint16_t)ConvertBitIntoBytes(&bpbits1[0], 9);
           uint8_t t_packet_timer = (uint8_t)ConvertBitIntoBytes(&bpbits1[9], 5);
 
-          uint16_t t_msms_timer = (uint16_t)ConvertBitIntoBytes(&bpbits1[0], 9);
-          uint16_t t_msline_timer = (uint16_t)ConvertBitIntoBytes(&bpbits1[0], 9);
+          uint16_t t_msms_timer = (uint16_t)ConvertBitIntoBytes(&bpbits2[0], 12);
+          uint16_t t_msline_timer = (uint16_t)ConvertBitIntoBytes(&bpbits2[12], 12);
 
           //just doing the raw values here, and not the decoded values, see clause A.1, Tables A.2, A.3, A.4, A.5
           fprintf (stderr, "\n");
@@ -910,10 +928,10 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
           uint8_t nin = (uint8_t)ConvertBitIntoBytes(&bpbits2[16], 8); //see clause 7.2.41
 
           //the second bit of the CSI, the rest are reserved (wasteful)
-          uint8_t hibernate_flag = bpbits1[1];
+          uint8_t hibernate_flag = bpbits2[1];
 
           //the first bit of the nin, the rest are reserved (yet again)
-          uint8_t reg_tg_sub = bpbits2[0]; //if the MS has to send TG during Registration Process (Zzzzzz)
+          uint8_t reg_tg_sub = bpbits2[16]; //if the MS has to send TG during Registration Process (Zzzzzz)
 
           fprintf (stderr, "\n");
           fprintf (stderr, " Hibernate Flag: %d; Reg Flag: %d; RES1: %d; RES2: %X; RES3: %X; BPARMS1: %X", hibernate_flag, reg_tg_sub, bpbits1[0], csi & 0x3F, nin & 0x7F, bparms1);
@@ -975,8 +993,16 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
         UNUSED(svc_flag);
         UNUSED(als_flag);
 
+        char ahoy_str[200]; memset(ahoy_str, 0, sizeof(ahoy_str));
+        sprintf (ahoy_str, "AHOY TGT: %d; SRC: %d; ", ahoy_target, ahoy_source);
+
         if (ahoy_gi == 0) fprintf (stderr, "Private ");
         else fprintf (stderr, "Group ");
+
+        if (ahoy_gi == 0)
+          strcat (ahoy_str, "Private; ");
+        else strcat (ahoy_str, "Group; ");
+        state->gi[state->currentslot] = ahoy_gi ^ 1;
 
         //need to put SVC OPT decoding in here, maybe just copy and paste from FLC?
 
@@ -997,8 +1023,48 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
 
         fprintf (stderr, "Target: %d; Source: %d; ", ahoy_target, ahoy_source);
 
+        if (svc_kind == 0 || svc_kind == 1) strcat (ahoy_str, "Voice Call; ");
+        else if (svc_kind == 2 || svc_kind == 3) strcat (ahoy_str, "Packet Data Call; ");
+        else if (svc_kind == 4 || svc_kind == 5) strcat (ahoy_str, "UDT Short Data Call; ");
+        else if (svc_kind == 6) strcat (ahoy_str, "UDT Short Data Polling Service; ");
+        else if (svc_kind == 7) strcat (ahoy_str, "Status Transport Service; ");
+        else if (svc_kind == 8) strcat (ahoy_str, "Call Diversion Service; ");
+        else if (svc_kind == 9) strcat (ahoy_str, "Call Answer Service; ");
+        else if (svc_kind == 10) strcat (ahoy_str, "Full Duplex Voice Call; ");
+        else if (svc_kind == 11) strcat (ahoy_str, "Full Duplex Packet Data Call; ");
+        else if (svc_kind == 12) strcat (ahoy_str, "Reserved; ");
+        else if (svc_kind == 13) strcat (ahoy_str, "Supplimentary Service (Stun/Revive/Kill/Auth); ");
+        else if (svc_kind == 14) strcat (ahoy_str, "Registration/Authentication; ");
+        else if (svc_kind == 15) strcat (ahoy_str, "Cancel Call Service; ");
+
         //check the source and/or target for special gateway identifiers
         dmr_gateway_identifier (ahoy_source, ahoy_target);
+
+        //log ahoy as a data call event //re-enable this if you want, but it can clog up the event history
+        // if (state->currentslot == 0)
+        // {
+        //   state->lastsrc = ahoy_source;
+        //   state->lasttg = ahoy_target;
+        // }
+        // else
+        // {
+        //   state->lastsrcR = ahoy_source;
+        //   state->lasttgR = ahoy_target;
+        // }
+        // watchdog_event_datacall (opts, state, ahoy_source, ahoy_target, ahoy_str, state->currentslot);
+        // if (state->currentslot == 0)
+        // {
+        //   state->lastsrc = 0;
+        //   state->lasttg = 0;
+        // }
+        // else
+        // {
+        //   state->lastsrcR = 0;
+        //   state->lasttgR = 0;
+        // }
+        // watchdog_event_history(opts, state, 0);
+        // watchdog_event_current(opts, state, 0);
+        //end ahoy logging
 
       }
 
@@ -1516,6 +1582,10 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
 
           //Test allowing a tg hold to pre-empt a call in progress and tune to the hold TG
           if (state->tg_hold != 0) state->last_vc_sync_time = 0;
+
+          //if no activity in this window
+          if ( (time(NULL) - state->last_vc_sync_time) > 2 ) //may use last_cc_sync_time instead
+            rotate_symbol_out_file(opts, state);
 
           //TODO: Consider a method to allow moving the frequency to the rest channel
           //when a TG hold is specified but nether slot carries the TG on Hold;
@@ -2101,6 +2171,10 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
         //Test allowing a tg hold to pre-empt a call in progress and tune to the hold TG
         if (state->tg_hold != 0) state->last_vc_sync_time = 0;
 
+        //if no activity in this window
+        if ( (time(NULL) - state->last_vc_sync_time) > 2 ) //may use last_cc_sync_time instead
+          rotate_symbol_out_file(opts, state);
+
         //TODO: Consider a method to allow moving the frequency to the free repeater channel
         //when a TG hold is specified but nether slot carries the TG on Hold;
         //CODED: using Free repeater in SLC to change over if required
@@ -2370,6 +2444,9 @@ void dmr_decode_syscode(dsd_opts * opts, dsd_state * state, uint8_t * cs_pdu_bit
 
   //raw syscode
   uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 14);
+
+  if (type == 0)
+    state->dmr_t3_syscode = syscode;
 
   uint8_t model = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 2);
   uint16_t net = 0;

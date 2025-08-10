@@ -88,6 +88,48 @@
 
 extern volatile uint8_t exitflag; //fix for issue #136
 
+//event history (each item)
+typedef struct {
+  uint8_t write;      //if this event needs to be written to a log file
+  uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
+  int8_t systype;     //indentifier of which decoded system type this is from (P25, DMR, etc)
+  int8_t subtype;     //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
+  uint32_t sys_id1;   //sys_id1 through 5 will be a hierarchy of system identifiers
+  uint32_t sys_id2;   //for example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
+  uint32_t sys_id3;   //conventional may only use NAC, RAN, or Color Codes
+  uint32_t sys_id4;   //
+  uint32_t sys_id5;   //
+  int8_t gi;          //group or individual
+  uint8_t enc;        //clear or encrypted
+  uint8_t enc_alg;    //alg if encrypted
+  uint16_t enc_key;   //enc key id value, if encrypted (not key value or key variable)
+  uint64_t mi;        //mi, or iv base value from OTA if provided
+  uint16_t svc;       //other relevant svc opts if applicable
+  uint32_t source_id; //source radio id or other source value
+  uint32_t target_id; //group or individual target, or destination value
+  char src_str[200];  //source, expressed as a string for M17, YSF, DSTAR, dPMR
+  char tgt_str[200];  //target, expressed as a string for M17, YSF, DSTAR, dPMR
+  char t_name[200];   //this is the string present from any csv groupName import 
+  char s_name[200];   //same as above, but if loaded from a src value and not tg value
+  char t_mode[200];   //mode, or A,B,D,DE from csv group import file
+  char s_mode[200];   //mode, or A,B,D,DE from csv group import file
+  uint32_t channel;   //if this occurs on a trunking channel, which channel
+  time_t event_time;  //time event occurred
+
+  uint8_t pdu[128*24];     //relevant link control, or full PDU if data call (in bytes)
+  char sysid_string[200];  //string comprised of system unique identifiers
+  char alias[2000];        //if this event has a source radio talker alias or similar
+  char gps_s[2000];        //gps, if returned, expressed as a string
+  char text_message[2000]; //if this event is a decoded text message, then it goes here
+  char event_string[2000]; //user legible and printable string for the event that happened
+  char internal_str[2000]; //string that relates to a DSD-FME generated event (ENC LO, error notices, etc)
+} Event_History;
+
+//event history for number of each items above
+typedef struct {
+  Event_History Event_History_Items[255];
+} Event_History_I;
+
 //new audio filter stuff from: https://github.com/NedSimao/FilteringLibrary
 typedef struct {
     float coef[2];
@@ -269,6 +311,8 @@ typedef struct
   FILE *mbe_out_f;
   FILE *mbe_out_fR; //second slot on a TDMA system
   FILE *symbol_out_f;
+  time_t symbol_out_file_creation_time; //time the symbol out file was created
+  uint8_t symbol_out_file_is_auto; //if the user hit the R key
   float audio_gain;
   float audio_gainR;
   float audio_gainA;
@@ -280,6 +324,7 @@ typedef struct
   char wav_out_file_raw[1024];
   char symbol_out_file[1024];
   char lrrp_out_file[1024];
+  char event_out_file[1024];
   char szNumbers[1024]; //**tera 10/32/64 char str
   short int mbe_out; //flag for mbe out, don't attempt fclose more than once
   short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
@@ -344,9 +389,9 @@ typedef struct
   pa_simple *pulse_digi_dev_outR;
   char pa_input_idx[100];
   char pa_output_idx[100];
-  int use_ncurses_terminal;
-  int ncurses_compact;
-  int ncurses_history;
+  uint8_t use_ncurses_terminal;
+  uint8_t ncurses_compact;
+  uint8_t ncurses_history;
   int reset_state;
   int payload;
   char output_name[1024];
@@ -546,6 +591,9 @@ typedef struct
   int lasttgR;
   int lastsrc;
   int lastsrcR;
+  int8_t gi[2]; //group, or private call, per slot
+  uint8_t eh_index;
+  uint8_t eh_slot;
   int nac;
   int errs;
   int errs2;
@@ -627,6 +675,7 @@ typedef struct
   short pulse_raw_out_buffer; //HERE HERE
 
   unsigned int dmr_color_code;
+  unsigned int dmr_t3_syscode;
   unsigned int nxdn_last_ran;
   unsigned int nxdn_last_rid;
   unsigned int nxdn_last_tg;
@@ -686,18 +735,22 @@ typedef struct
 
   //dmr talker alias new/fixed stuff
   uint8_t dmr_alias_format[2]; //per slot
-  uint8_t dmr_alias_len[2]; //per slot
+  uint8_t dmr_alias_block_len[2]; //per slot
+  uint8_t dmr_alias_char_size[2]; //per slot
   char dmr_alias_block_segment[2][4][7][16]; //2 slots, by 4 blocks, by up to 7 alias bytes that are up to 16-bit chars
-  char dmr_embedded_gps[2][200]; //2 slots by 99 char string for string embedded gps
-  char dmr_lrrp_gps[2][200]; //2 slots by 99 char string for string lrrp gps
+  char dmr_embedded_gps[2][600]; //2 slots by 99 char string for string embedded gps
+  char dmr_lrrp_gps[2][600]; //2 slots by 99 char string for string lrrp gps
   char dmr_site_parms[200]; //string for site/net info depending on type of DMR system (TIII or Con+)
   char call_string[2][200]; //string for call information
   char active_channel[31][200]; //string for storing and displaying active trunking channels
 
   //Generic Talker Alias String
-  char generic_talker_alias[2][100];
+  char generic_talker_alias[2][500];
 
   dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
+
+  //event history itemized per slot
+  Event_History_I * event_history_s;
 
   //new audio filter structs
   LPFilter RCFilter;
@@ -794,6 +847,8 @@ typedef struct
 
   unsigned short esk_mask;
   unsigned long long int edacs_site_id;
+  uint32_t edacs_sys_id;
+  uint32_t edacs_area_code;
   int edacs_lcn_count; //running tally of lcn's observed on edacs system
   int edacs_cc_lcn; //current lcn for the edacs control channel
   int edacs_vc_lcn; //current lcn for any active vc (not the one we are tuned/tuning to)
@@ -1098,6 +1153,8 @@ void PrintAMBEData (dsd_opts * opts, dsd_state * state, char *ambe_d);
 void PrintIMBEData (dsd_opts * opts, dsd_state * state, char *imbe_d);
 int readImbe4400Data (dsd_opts * opts, dsd_state * state, char *imbe_d);
 int readAmbe2450Data (dsd_opts * opts, dsd_state * state, char *ambe_d);
+void keyring(dsd_opts * opts, dsd_state * state);
+void read_sdrtrunk_json_format (dsd_opts * opts, dsd_state * state);
 void openMbeInFile (dsd_opts * opts, dsd_state * state);
 void closeMbeOutFile (dsd_opts * opts, dsd_state * state);
 void closeMbeOutFileR (dsd_opts * opts, dsd_state * state); //tdma slot 2
@@ -1107,8 +1164,13 @@ void openWavOutFile (dsd_opts * opts, dsd_state * state);
 void openWavOutFileL (dsd_opts * opts, dsd_state * state);
 void openWavOutFileR (dsd_opts * opts, dsd_state * state);
 void openWavOutFileRaw (dsd_opts * opts, dsd_state * state);
+SNDFILE * open_wav_file (char * dir, char * temp_filename, uint16_t sample_rate, uint8_t ext);
+SNDFILE * close_wav_file(SNDFILE * wav_file);
+SNDFILE * close_and_rename_wav_file(SNDFILE * wav_file, char * wav_out_filename, char * dir, Event_History_I * event_struct);
+SNDFILE * close_and_delete_wav_file(SNDFILE * wav_file, char * wav_out_filename);
 void openSymbolOutFile (dsd_opts * opts, dsd_state * state);
 void closeSymbolOutFile (dsd_opts * opts, dsd_state * state);
+void rotate_symbol_out_file (dsd_opts * opts, dsd_state * state);
 void writeRawSample (dsd_opts * opts, dsd_state * state, short sample);
 void closeWavOutFile (dsd_opts * opts, dsd_state * state);
 void closeWavOutFileL (dsd_opts * opts, dsd_state * state);
@@ -1186,6 +1248,8 @@ void unpack_ambe (uint8_t * input, char * ambe);
 
 void ncursesOpen (dsd_opts * opts, dsd_state * state);
 void ncursesPrinter (dsd_opts * opts, dsd_state * state);
+void ncursesMenu (dsd_opts * opts, dsd_state * state);
+uint8_t ncurses_input_handler(dsd_opts * opts, dsd_state * state, int c);
 void ncursesClose ();
 
 //new NXDN Functions start here!
@@ -1199,7 +1263,10 @@ void nxdn_deperm_facch2_udch (dsd_opts * opts, dsd_state * state, uint8_t bits[3
 //type-d 'idas' deinterleaving/depuncturing functions
 void nxdn_deperm_scch(dsd_opts * opts, dsd_state * state, uint8_t bits[60], uint8_t direction);
 void nxdn_deperm_facch3_udch2(dsd_opts * opts, dsd_state * state, uint8_t bits[288], uint8_t type);
-//end
+//DCR Mode
+void nxdn_deperm_sacch2(dsd_opts * opts, dsd_state * state, uint8_t bits[60]);
+void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144]);
+//MT and Voice
 void nxdn_message_type (dsd_opts * opts, dsd_state * state, uint8_t MessageType);
 void nxdn_voice (dsd_opts * opts, dsd_state * state, int voice, uint8_t dbuf[182]);
 //Osmocom OP25 12 Rate Trellis Decoder (for NXDN, M17, YSF, etc)
@@ -1271,7 +1338,7 @@ rs_12_9_checksum_t *rs_12_9_calc_checksum(rs_12_9_codeword_t *codeword);
 
 //DMR CRC Functions
 uint16_t ComputeCrcCCITT(uint8_t * DMRData);
-uint16_t ComputeCrcCCITT16d(const uint8_t buf[], uint8_t len);
+uint16_t ComputeCrcCCITT16d(const uint8_t * buf, uint32_t len);
 uint32_t ComputeAndCorrectFullLinkControlCrc(uint8_t * FullLinkControlDataBytes, uint32_t * CRCComputed, uint32_t CRCMask);
 uint8_t ComputeCrc5Bit(uint8_t * DMRData);
 uint16_t ComputeCrc9Bit(uint8_t * DMRData, uint32_t NbData);
@@ -1286,19 +1353,20 @@ void dmr_cspdu (dsd_opts * opts, dsd_state * state, uint8_t cs_pdu_bits[], uint8
 void dmr_slco (dsd_opts * opts, dsd_state * state, uint8_t slco_bits[]);
 uint8_t dmr_cach (dsd_opts * opts, dsd_state * state, uint8_t cach_bits[25]);
 uint32_t dmr_34(uint8_t * input, uint8_t treturn[18]); //simplier trellis decoder
-void beeper (dsd_opts * opts, dsd_state * state, int lr); //the tone beeper function
+void beeper (dsd_opts * opts, dsd_state * state, int lr, int id, int ad, int len);
 void dmr_gateway_identifier (uint32_t source, uint32_t target); //translate special addresses
 
 //Embedded Alias and GPS reports
-void dmr_embedded_alias_header (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[]);
-void dmr_embedded_alias_blocks (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[]);
+void dmr_talker_alias_lc_header (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t * lc_bits);
+void dmr_talker_alias_lc_blocks (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t block_num, uint8_t * lc_bits);
+void dmr_talker_alias_lc_decode (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t block_num, uint8_t char_size, uint16_t end);
 void apx_embedded_alias_test_phase1 (dsd_opts * opts, dsd_state * state);
 void apx_embedded_alias_header_phase1 (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t * lc_bits);
 void apx_embedded_alias_header_phase2 (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t * lc_bits);
 void apx_embedded_alias_blocks_phase1 (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t * lc_bits);
 void apx_embedded_alias_blocks_phase2 (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t * lc_bits);
 void apx_embedded_alias_decode (dsd_opts * opts, dsd_state * state, uint8_t slot, int16_t num_bits, uint8_t * input);
-void apx_embedded_alias_dump (dsd_opts * opts, dsd_state * state, uint16_t num_bytes, uint8_t * input, uint8_t * decoded);
+void apx_embedded_alias_dump (dsd_opts * opts, dsd_state * state, uint8_t slot, uint16_t num_bytes, uint8_t * input, uint8_t * decoded);
 void l3h_embedded_alias_blocks_phase1 (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t * lc_bits);
 void l3h_embedded_alias_decode (dsd_opts * opts, dsd_state * state, uint8_t slot, int16_t len, uint8_t * input);
 void tait_iso7_embedded_alias_decode (dsd_opts * opts, dsd_state * state, uint8_t slot, int16_t len, uint8_t * input);
@@ -1349,10 +1417,25 @@ void decode_ars(dsd_opts * opts, dsd_state * state, uint8_t * input, int len);
 char * getTime();
 char * getTimeC();
 char * getTimeN(time_t t);
+char * getTimeF(time_t t);
 char * getDate();
 char * getDateH();
 char * getDateS();
 char * getDateN(time_t t);
+char * getDateF(time_t t);
+
+//event history functions
+void init_event_history (Event_History_I * event_struct, uint8_t start, uint8_t stop);
+void push_event_history (Event_History_I * event_struct);
+void write_event_to_log_file (dsd_opts * opts, dsd_state * state, uint8_t slot, uint8_t swrite, char * event_string);
+void watchdog_event_history (dsd_opts * opts, dsd_state * state, uint8_t slot);
+void watchdog_event_current (dsd_opts * opts, dsd_state * state, uint8_t slot);
+void watchdog_event_datacall (dsd_opts * opts, dsd_state * state, uint32_t src, uint32_t dst, char * data_string, uint8_t slot);
+
+//edacs AFS things
+int isCustomAfsString(dsd_state * state);
+int getAfsStringLength(dsd_state * state);
+int getAfsString(dsd_state * state, char * buffer, int a, int f, int s);
 
 //dmr alg stuff
 void dmr_alg_reset (dsd_opts * opts, dsd_state * state);
@@ -1523,7 +1606,9 @@ void aes_ctr_bytewise_payload_crypt (uint8_t * iv, uint8_t * key, uint8_t * payl
 void aes_ctr_bitwise_payload_crypt (uint8_t * iv, uint8_t * key, uint8_t * payload, int type);
 
 //Hytera Enhanced
-void hytera_enhanced_enc_setup(dsd_opts * opts, dsd_state * state, unsigned long long int key_value, unsigned long long int mi_value);
+void hytera_enhanced_rc4_setup(dsd_opts * opts, dsd_state * state, unsigned long long int key_value, unsigned long long int mi_value);
+unsigned long long int hytera_lfsr(uint8_t * mi, uint8_t * taps, uint8_t len);
+void hytera_enhanced_alg_refresh(dsd_state * state);
 
 //LFSR to expand either a DMR 32-bit or P25/NXDN 64-bit MI into a 128-bit IV for AES
 void LFSR128(dsd_state * state);

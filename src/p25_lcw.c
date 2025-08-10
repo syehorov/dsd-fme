@@ -64,10 +64,14 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
         uint32_t source = (uint32_t)ConvertBitIntoBytes(&LCW_bits[48], 24);
         fprintf (stderr, " - Group %d Source %d", group, source);
         UNUSED2(res, explicit);
+        state->gi[0] = 0;
+        state->dmr_so = lc_svcopt; //test to make sure no random issues
 
         //don't set this when zero, annoying blink occurs in ncurses
-        if (group != 0) state->lasttg = group;
-        if (source != 0) state->lastsrc = source;
+        if (group != 0)
+          state->lasttg = group;
+        // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
+          state->lastsrc = source;
 
         sprintf (state->call_string[0], "   Group ");
         if (lc_svcopt & 0x80) strcat (state->call_string[0], " Emergency  ");
@@ -83,8 +87,12 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
         fprintf (stderr, " - Target %d Source %d", target, source);
 
         //don't set this when zero, annoying blink occurs in ncurses
-        if (target != 0) state->lasttg = target;
-        if (source != 0) state->lastsrc = source;
+        if (target != 0)
+          state->lasttg = target;
+        // if (source != 0) //disable now with new event history, if same src next ptt, then it will capture all of them as individual event items
+          state->lastsrc = source;
+        state->gi[0] = 1;
+        state->dmr_so = lc_svcopt;
 
         sprintf (state->call_string[0], " Private ");
         if (lc_svcopt & 0x80) strcat (state->call_string[0], " Emergency  ");
@@ -160,6 +168,7 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
         uint32_t target = (uint32_t)ConvertBitIntoBytes(&LCW_bits[16], 24);
         uint32_t src   = (uint32_t)ConvertBitIntoBytes(&LCW_bits[40], 24);
         fprintf (stderr, "TGT: %d; SRC: %d; ", target, src);
+        state->gi[0] = 1;
       }
 
       else if (lc_format == 0x50)
@@ -326,6 +335,7 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
           {
             state->lasttg = 0;
             state->lastsrc = 0;
+            state->gi[0] = -1;
             state->payload_algid = 0;
             state->payload_keyid = 0;
             // state->payload_miP = 0;
@@ -345,6 +355,7 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
             #ifdef USE_RTLSDR
             state->lasttg = 0;
             state->lastsrc = 0;
+            state->gi[0] = -1;
             state->payload_algid = 0;
             state->payload_keyid = 0;
             // state->payload_miP = 0;
@@ -432,6 +443,7 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
       if (LCW_bits[31] == 1) fprintf (stderr, " EXT;"); //Full SUID next LC (external) (octet 3)
       state->lasttg = sg;
       state->lastsrc = src;
+      state->gi[0] = 0;
     }
 
     else if (lc_mfid == 0x90 && lc_opcode == 0x1)
@@ -442,6 +454,7 @@ void p25_lcw (dsd_opts * opts, dsd_state * state, uint8_t LCW_bits[], uint8_t ir
       fprintf (stderr, " SG: %d; CH: %04X;", sg, ch);
       if (LCW_bits[16] == 1) fprintf (stderr, " Res;"); //res bit (octet 2)
       if (LCW_bits[17] == 1) fprintf (stderr, " ENC;"); //P-bit (octet 2)
+      state->gi[0] = 0;
     }
 
     else if (lc_mfid == 0x90 && lc_opcode == 0x3)

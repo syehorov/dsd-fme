@@ -26,6 +26,11 @@
 void
 processLDU2 (dsd_opts * opts, dsd_state * state)
 {
+
+  //push current slot to 0, just in case swapping p2 to p1
+  //or stale slot value from p2 and then decoding a pdu
+  state->currentslot = 0;
+  
   // extracts IMBE frames from LDU frame
   int i;
   uint8_t mi[73];
@@ -574,11 +579,11 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
   {
     state->dmr_alias_format[0] = 0x02;
     if (lsd_hex2 > 8) lsd_hex2 = 8; //sanity check
-    state->dmr_alias_len[0] = lsd_hex2;
+    state->dmr_alias_block_len[0] = lsd_hex2;
     state->data_block_counter[0] = 0;
   }
 
-  if ( (k >= state->dmr_alias_len[0]) && (state->dmr_alias_format[0] == 0x02) )
+  if ( (k >= state->dmr_alias_block_len[0]) && (state->dmr_alias_format[0] == 0x02) )
   {
     //storage for completed string
     char str[16]; int wr = 0; int tsrc = state->lastsrc; int z = 0; k = 0;
@@ -643,7 +648,7 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
     //reset values
     state->dmr_alias_format[0] = 0;
     state->data_block_counter[0] = 0;
-    state->dmr_alias_len[0] = 0;
+    state->dmr_alias_block_len[0] = 0;
     // memset (state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
   }
   #else
@@ -700,6 +705,13 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
         sprintf (state->group_array[state->group_tally].groupMode, "%s", "DE");
         sprintf (state->group_array[state->group_tally].groupName, "%s", "ENC LO"); //was xx and not state->group_tally
         state->group_tally++;
+      }
+
+      //run a watchdog here so we can update this with the crypto variables and ENC LO
+      if (ttg != 0 && enc_wr == 0) //
+      {
+        sprintf (state->event_history_s[0].Event_History_Items[0].internal_str, "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
+        watchdog_event_current(opts, state, 0);
       }
 
       //return to the control channel

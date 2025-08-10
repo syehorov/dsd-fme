@@ -224,11 +224,17 @@ getFrameSync (dsd_opts * opts, dsd_state * state)
   lastt = 0;
   state->numflips = 0;
 
-  //move ncursesPrinter outside of the sync loop, causes weird lag inside the loop
+  //run here as well
   if (opts->use_ncurses_terminal == 1)
-  {
     ncursesPrinter(opts, state);
-  }
+
+  //slot 1
+  watchdog_event_history(opts, state, 0);
+  watchdog_event_current(opts, state, 0);
+
+  //slot 2 for TDMA systems
+  watchdog_event_history(opts, state, 1);
+  watchdog_event_current(opts, state, 1);
 
   if ((opts->symboltiming == 1) && (state->carrier == 1))
     {
@@ -239,6 +245,11 @@ getFrameSync (dsd_opts * opts, dsd_state * state)
     {
 
       t++;
+
+      //run ncurses printer more frequently when no sync to speed up responsiveness of it during no sync period
+      //NOTE: Need to monitor and test this, if responsiveness issues arise, then disable this
+      if ( opts->use_ncurses_terminal == 1 && ((t % 300) == 0)) //t maxes out at 1800 (6 times each getFrameSync)
+        ncursesPrinter(opts, state);
 
       symbol = getSymbol (opts, state, 0);
 

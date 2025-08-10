@@ -22,6 +22,8 @@ uint16_t convert_hex_to_dec(uint16_t input)
 void utf16_to_text (dsd_state * state, uint8_t wr, uint16_t len, uint8_t * input)
 {
   uint8_t slot = state->currentslot;
+  if (wr == 1)
+    sprintf (state->event_history_s[slot].Event_History_Items[0].text_message, "%s", ""); //full text string
   // fprintf (stderr, "\n UTF16 Text: ");
   uint16_t ch16 = 0;
   for (uint16_t i = 0; i < len; i += 2)
@@ -39,18 +41,22 @@ void utf16_to_text (dsd_state * state, uint8_t wr, uint16_t len, uint8_t * input
       fprintf (stderr, " / ");
     else fprintf (stderr, "-");
 
-    //TODO: Add TMS String to ncurses string w/ wide char support?
-    //for now, just rip the first 40 or so chars lower byte value
-    //in the ASCII Range (should be alright for a quick visual)
-    char c[2]; c[0] = (char)input[i+1]; c[2] = 0;
-    if (wr == 1&& i < 76 && input[i+1] < 0x7F && input[i+1] >= 0x20)
-      strcat (state->dmr_lrrp_gps[slot], c);
+    //convert to ascii range (will break eastern langauge, but can't do much about that right now)
+    char c[2]; c[0] = (char)input[i+1]; c[1] = 0;
+
+    //short version (disabled)
+    // if (wr == 1 && i < 76 && input[i] == 0 && input[i+1] < 0x7F && input[i+1] >= 0x20)
+    //   strcat (state->dmr_lrrp_gps[slot], c);
+
+    //this is the long version, complete message for logging purposes
+    if (wr == 1 && input[i] == 0 && input[i+1] < 0x7F && input[i+1] >= 0x20)
+      strcat (state->event_history_s[slot].Event_History_Items[0].text_message, c);
 
   }
 
   //add elipses to indicate this is possibly truncated
-  if (wr == 1)
-    strcat (state->dmr_lrrp_gps[slot], "...");
+  // if (wr == 1)
+  //   strcat (state->dmr_lrrp_gps[slot], "...");
 
   //debug
   // if (wr == 1)
@@ -61,6 +67,10 @@ void utf8_to_text (dsd_state * state, uint8_t wr, uint16_t len, uint8_t * input)
 {
   uint8_t slot = state->currentslot;
   fprintf (stderr, "\n UTF8 Text: ");
+
+  if (wr == 1)
+    sprintf (state->event_history_s[slot].Event_History_Items[0].text_message, "%s", ""); //full text string
+
   for (uint16_t i = 0; i < len; i++)
   {
     if (input[i] >= 0x20 && input[i] < 0x7F) //if not a linebreak or terminal commmands
@@ -71,22 +81,30 @@ void utf8_to_text (dsd_state * state, uint8_t wr, uint16_t len, uint8_t * input)
     //   break;
     else fprintf (stderr, "-");
 
+    
+    char c = input[i];
+
     //for now, just rip the first 40 or so chars lower byte value
     //in the ASCII Range (should be alright for a quick visual)
-    char c = input[i];
-    if (wr == 1 && i < 38 && c < 0x7F && c >= 0x20)
-      strcat (state->dmr_lrrp_gps[slot], &c);
+    // if (wr == 1 && i < 38 && c < 0x7F && c >= 0x20)
+    //   strcat (state->dmr_lrrp_gps[slot], &c);
+
+    //this is the long version, complete message for logging purposes
+    if (wr == 1 && c < 0x7F && c >= 0x20)
+      strcat (state->event_history_s[slot].Event_History_Items[0].text_message, &c);
+
   }
 
   //add elipses to indicate this is possibly truncated
-  if (wr == 1)
-    strcat (state->dmr_lrrp_gps[slot], "...");
+  // if (wr == 1)
+  //   strcat (state->dmr_lrrp_gps[slot], "...");
 
 }
 
 void dmr_sd_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * DMR_PDU)
 {
 
+  uint8_t slot = state->currentslot;
   uint16_t offset = 0; //sanity check of sorts, prevent extra long line print outs in the console
   if (len > 23)
     offset = 23;
@@ -96,6 +114,8 @@ void dmr_sd_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * DMR
   {
     utf8_to_text(state, 0, len-offset, DMR_PDU+offset);
     dmr_locn(opts, state, len, DMR_PDU);
+    sprintf (state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_lrrp_gps[slot]);
+    state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //Remus, add this line to a decode to change its line color
   }
   else
   {
@@ -103,6 +123,13 @@ void dmr_sd_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * DMR
     utf8_to_text(state, 0, len, DMR_PDU); //generic catch-all to see if anything relevant is there
     // utf16_to_text(state, 0, len, DMR_PDU); //generic catch-all to see if anything relevant is there
   }
+
+  //dump to event history
+  uint32_t source = state->dmr_lrrp_source[slot];
+  uint32_t target = state->dmr_lrrp_target[slot];
+  char comp_string[500]; memset (comp_string, 0, sizeof(comp_string));
+  sprintf (comp_string, "Short Data SRC: %d; TGT: %d; ", source, target);
+  watchdog_event_datacall (opts, state, source, target, comp_string, slot);
 
 }
 
@@ -235,6 +262,14 @@ void dmr_udp_comp_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t
   }
   else fprintf (stderr, "Unknown Decode Format;");
 
+  uint8_t slot = 0;
+  if (state->currentslot == 1)
+    slot = 1;
+
+  char comp_string[500]; memset (comp_string, 0, sizeof(comp_string));
+  sprintf (comp_string, "IPC: %d; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ", ipid, opcode, said, spid, addrstring[0], portstring[0], daid, dpid, addrstring[1], portstring[1]);
+  watchdog_event_datacall (opts, state, said, daid, comp_string, slot);
+
 }
 
 //IP PDU header decode and port forward to appropriate decoder
@@ -322,11 +357,13 @@ void decode_ip_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * 
 
       fprintf (stderr, "LRRP;");
       dmr_lrrp (opts, state, len, src24, dst24, input+28); //len is offset with IP and UDP header lens, 4 CRC, and 1 for the 0D token
+      state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //Remus, add this line to a decode to change its line color
     }
     else if (port1 == 4004 && port2 == 4004)
     {
       fprintf (stderr, "XCMP;");
       sprintf (state->dmr_lrrp_gps[slot], "XCMP SRC: %d; DST: %d;", src24, dst24);
+      state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //Remus, add this line to a decode to change its line color
     }
     else if (port1 == 4005 && port2 == 4005)
     {
@@ -404,7 +441,7 @@ void decode_ip_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * 
       }
       else
       {
-        strcat (state->dmr_lrrp_gps[slot], "ACK;");
+        strcat (state->dmr_lrrp_gps[slot], "Acknowledgment;");
         fprintf (stderr, "Acknowledgment;");
       }
     }
@@ -428,6 +465,12 @@ void decode_ip_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * 
       fprintf (stderr, "Job Ticket Server;");
       sprintf (state->dmr_lrrp_gps[slot], "JTS SRC: %d; DST: %d;", src24, dst24);
     }
+    else if (port1 == 4069 && port2 == 4069)
+    {
+      //https://trbonet.com/kb/how-to-configure-dt500-and-mobile-radio-to-work-with-scada-sensors/
+      fprintf (stderr, "TRBOnet SCADA;");
+      sprintf (state->dmr_lrrp_gps[slot], "SCADA SRC: %d; DST: %d;", src24, dst24);
+    }
     //ETSI specific -- unknown entry value, assuming +28
     else if (port1 == 5016 && port2 == 5016)
     {
@@ -435,8 +478,8 @@ void decode_ip_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * 
       if (len > 29)
         len -= 29;
 
-      fprintf (stderr, "TMS;");
-      sprintf (state->dmr_lrrp_gps[slot], "TMS SRC: %d; DST: %d; ", src24, dst24);
+      fprintf (stderr, "ETSI TMS;");
+      sprintf (state->dmr_lrrp_gps[slot], "ETSI TMS SRC: %d; DST: %d; ", src24, dst24);
       utf16_to_text(state, 1, len, input+28);
     }
     else if (port1 == 5017 && port2 == 5017)
@@ -459,7 +502,7 @@ void decode_ip_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * 
     }
     else
     {
-      sprintf (state->dmr_lrrp_gps[slot], " IP Call SRC: %d; Port; %d; DST: %d; Port: %d;", src24, port1, dst24, port2);
+      sprintf (state->dmr_lrrp_gps[slot], "IP SRC: %d.%d.%d.%d:%d; DST: %d.%d.%d.%d:%d; Unknown UDP Port;", input[12], input[13], input[14], input[15], port1, input[16], input[17], input[18], input[19], port2);
       fprintf (stderr, "Unknown UDP Port;");
       // if (len > 28) //default catch all (debug only)
       //   utf8_to_text(state, 0, len-28, input+28);
@@ -470,12 +513,14 @@ void decode_ip_pdu (dsd_opts * opts, dsd_state * state, uint16_t len, uint8_t * 
 
   else
   {
-    sprintf (state->dmr_lrrp_gps[slot], " IP Call SRC: %d; DST: %d; Protocol: %d;", src24, dst24, prot);
+    sprintf (state->dmr_lrrp_gps[slot], "IP SRC: %d.%d.%d.%d; DST: %d.%d.%d.%d; Unknown IP Protocol: %d; ", input[12], input[13], input[14], input[15], input[16], input[17], input[18], input[19], prot);
     fprintf(stderr, "Unknown IP Protocol: %02X;", prot);
     // if (len > 28) //default catch all (debug only)
     //   utf8_to_text(state, 0, len-28, input+28);
     // else utf8_to_text(state, 0, len, input+28);
   }
+
+  watchdog_event_datacall (opts, state, src24, dst24, state->dmr_lrrp_gps[slot], slot);
 
 }
 
@@ -486,6 +531,9 @@ void dmr_lrrp (dsd_opts * opts, dsd_state * state, uint16_t len, uint32_t source
   uint16_t message_len = 0;
   uint8_t slot = state->currentslot;
   uint8_t lrrp_confidence = 0; //variable to increment based on number of tokens found, the more, the higher the confidence level
+  uint8_t lrrp_type = DMR_PDU[0];
+  uint8_t is_request = 0;
+  uint8_t is_response = 0;
 
   //source/dest and ports (this is grabbed in the IP decoding phase)
   if (source != 0) lrrp_confidence++;
@@ -533,12 +581,29 @@ void dmr_lrrp (dsd_opts * opts, dsd_state * state, uint16_t len, uint32_t source
   {
     uint8_t token = DMR_PDU[i];
     switch(token){
-      case 0x0D: //message len indicator
+      case 0x0F: //Triggered Location Stop Request
+      case 0x05: //Immediate Location Request
+      case 0x09: //Triggered Location Start Request
+      case 0x14: //Protocol Version Request
+        if (i == 0) //see if this is the first octet, otherwise, can't verify this is going to work
+        {
+          message_len = DMR_PDU[i+1];
+          i = len; //go to end
+          lrrp_confidence++;
+          is_request = 1;
+        }
+        break;
+      case 0x07: //Immediate Location Response
+      case 0x0B: //Triggered Location Start Response
+      case 0x0D: //Triggered Location
+      case 0x11: //Triggered Location Stop Response
+      case 0x15: //Protocol Version Response
         if (i == 0) //see if this is the first octet, otherwise, can't verify this is going to work
         {
           message_len = DMR_PDU[i+1];
           i += 3; //next byte is len, then next two are usually 0x22 0xXX or 0x23 0xXX
           lrrp_confidence++;
+          is_response = 1;
         }
         break;
 
@@ -745,12 +810,36 @@ void dmr_lrrp (dsd_opts * opts, dsd_state * state, uint16_t len, uint32_t source
       sprintf (velstr, "%s", "");
       sprintf (degstr, "%s", "");
       if (lat) sprintf (lrrpstr, "LRRP SRC: %0d; (%lf, %lf)", source, lat_fin, lon_fin);
+      else if (is_request) sprintf (lrrpstr, "LRRP SRC: %0d; Request from TGT: %d;", source, dest);
+      else if (is_response) sprintf (lrrpstr, "LRRP SRC: %0d; Response to TGT: %d;", source, dest);
+      else sprintf (lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;; ", lrrp_type, source, dest);
       if (vel_set) sprintf (velstr, " %.4lf km/h", velocity * 3.6);
       if (deg_set) sprintf (degstr, " %d%s  ", degrees, deg_glyph);
       sprintf (state->dmr_lrrp_gps[slot], "%s%s%s", lrrpstr, velstr, degstr);
 
+      if (!lat)
+        fprintf (stderr, "\n %s", state->dmr_lrrp_gps[slot]);
+
+
+    }
+    else
+    {
+      char lrrpstr[100];
+      sprintf (lrrpstr, "%s", "");
+      sprintf (lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", lrrp_type, source, dest);
+      sprintf (state->dmr_lrrp_gps[slot], "%s", lrrpstr);
+      fprintf (stderr, "\n %s", state->dmr_lrrp_gps[slot]);
     }
 
+  }
+
+  else
+  {
+    char lrrpstr[100];
+    sprintf (lrrpstr, "%s", "");
+    sprintf (lrrpstr, "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", lrrp_type, source, dest);
+    sprintf (state->dmr_lrrp_gps[slot], "%s", lrrpstr);
+    fprintf (stderr, "\n %s", state->dmr_lrrp_gps[slot]);
   }
 
   fprintf (stderr, "%s", KNRM);

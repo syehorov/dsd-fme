@@ -49,6 +49,10 @@ void processDSTAR(dsd_opts * opts, dsd_state * state)
     if (opts->use_ncurses_terminal == 1)
       ncursesPrinter(opts, state);
 
+    //slot 1
+    watchdog_event_history(opts, state, 0);
+    watchdog_event_current(opts, state, 0);
+
   }
 
   fprintf (stderr, "\n");
@@ -334,6 +338,8 @@ void processDSTAR_SD(dsd_opts * opts, dsd_state * state, uint8_t * sd)
 
         //this seems to work okay with a few samples, but wouldn't be surprised if it broke down
         //randomly on different users, depending on location and what else in in $$CRC
+
+        sprintf (state->event_history_s[0].Event_History_Items[0].gps_s, "%s", state->dstar_gps);
       }
       else
       {
@@ -351,6 +357,7 @@ void processDSTAR_SD(dsd_opts * opts, dsd_state * state, uint8_t * sd)
         }
         strt[59] = '\0';
         memcpy (state->dstar_txt, strt, sizeof(strt));
+        sprintf (state->event_history_s[0].Event_History_Items[0].text_message, "%s", state->dstar_txt);
       }
     }
 
@@ -370,6 +377,7 @@ void processDSTAR_SD(dsd_opts * opts, dsd_state * state, uint8_t * sd)
       }
       strt[59] = '\0';
       memcpy (state->dstar_txt, strt, sizeof(strt));
+      sprintf (state->event_history_s[0].Event_History_Items[0].text_message, "%s", state->dstar_txt);
     }
     //anything else
     else //print entire thing

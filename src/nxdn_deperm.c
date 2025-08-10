@@ -421,6 +421,403 @@ void nxdn_deperm_sacch(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 
 }
 
+//sacch2 (JPN DCR)
+//SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
+void nxdn_deperm_sacch2(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
+{
+	//see about initializing these variables
+	uint8_t deperm[60]; //60
+	uint8_t depunc[72]; //72
+	uint8_t trellis_buf[32]; //32
+
+	memset (deperm, 0, sizeof(deperm));
+	memset (depunc, 0, sizeof(depunc));
+	memset (trellis_buf, 0, sizeof(trellis_buf));
+
+	int o = 0;
+	uint8_t crc = 1; //value computed by crc6 on payload
+	uint8_t check = 0; //value pulled from last 6 bits
+
+	for (int i=0; i<60; i++)
+		deperm[PERM_12_5[i]] = bits[i];
+	for (int p=0; p<60; p+= 10) {
+		depunc[o++] = deperm[p+0];
+		depunc[o++] = deperm[p+1];
+		depunc[o++] = deperm[p+2];
+		depunc[o++] = deperm[p+3];
+		depunc[o++] = deperm[p+4];
+		depunc[o++] = 0;
+		depunc[o++] = deperm[p+5];
+		depunc[o++] = deperm[p+6];
+		depunc[o++] = deperm[p+7];
+		depunc[o++] = deperm[p+8];
+		depunc[o++] = deperm[p+9];
+		depunc[o++] = 0;
+	}
+
+	//switch to the convolutional decoder
+	uint8_t temp[80];
+	uint8_t s0;
+  uint8_t s1;
+	uint8_t m_data[5]; //5
+
+	memset (temp, 0, sizeof (temp));
+	memset (m_data, 0, sizeof (m_data));
+	memset (trellis_buf, 0, sizeof(trellis_buf));
+
+	for (int i = 0; i < 72; i++)
+		temp[i] = depunc[i] << 1;
+
+	CNXDNConvolution_start();
+  for (int i = 0; i < 36; i++)
+  {
+    s0 = temp[(2*i)];
+    s1 = temp[(2*i)+1];
+
+    CNXDNConvolution_decode(s0, s1);
+  }
+
+	//stored as 4 bytes, will need to convert to trellis_buf after running
+  CNXDNConvolution_chainback(m_data, 32);
+
+	for(int i = 0; i < 4; i++)
+  {
+    trellis_buf[(i*8)+0] = (m_data[i] >> 7) & 1;
+    trellis_buf[(i*8)+1] = (m_data[i] >> 6) & 1;
+    trellis_buf[(i*8)+2] = (m_data[i] >> 5) & 1;
+    trellis_buf[(i*8)+3] = (m_data[i] >> 4) & 1;
+    trellis_buf[(i*8)+4] = (m_data[i] >> 3) & 1;
+    trellis_buf[(i*8)+5] = (m_data[i] >> 2) & 1;
+    trellis_buf[(i*8)+6] = (m_data[i] >> 1) & 1;
+    trellis_buf[(i*8)+7] = (m_data[i] >> 0) & 1;
+  }
+
+	crc = crc6(trellis_buf, 26);
+	check = (uint8_t) convert_bits_into_output(trellis_buf+26, 6);
+
+	//debug
+	// if (crc == check)
+	// 	fprintf (stderr, " Pass 1 ");
+
+	//if the crc fails, attempt again with the other trellis decoder
+	if (crc != check)
+	{
+		//debug
+		// fprintf (stderr, " Pass 2 ");
+		crc = 1; check = 0;
+		memset (trellis_buf, 0, sizeof(trellis_buf));
+		memset (m_data, 0, sizeof(m_data));
+		trellis_decode(trellis_buf, depunc, 32);
+		//fill m_data bytes with trellis_buf
+		for(int i = 0; i < 4; i++)
+			m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i*8], 8);
+		crc = crc6(trellis_buf, 26); //32
+		check = (uint8_t) convert_bits_into_output(trellis_buf+26, 6);
+	}
+
+	//Configuration of Single Message or Multi Part Message
+	uint8_t sf_fb  = trellis_buf[0];
+	uint8_t sf_num = (uint8_t) convert_bits_into_output(trellis_buf+1, 2);
+	uint8_t sf_mes = (uint8_t) convert_bits_into_output(trellis_buf+3, 5);
+	uint8_t sf_pof = 3-sf_num;
+
+	if (crc == check)
+	{
+		if (sf_fb && sf_pof) //single message, single unit
+			fprintf (stderr, "PF: %d/1; ", sf_num+1);
+		else //multiple unit message
+			fprintf (stderr, "PF: %d/4; ", sf_pof+1);
+
+		if (sf_mes == 0x01)
+			fprintf (stderr, "Call; ");
+		else if (sf_mes == 0x02)
+			fprintf (stderr, "PDU;  ");
+		else if (sf_mes == 0x1E)
+			fprintf (stderr, "End;  ");
+		else if (sf_mes == 0x00)
+			fprintf (stderr, "Idle; ");
+		else fprintf (stderr, "Res: %02X; ", sf_mes);
+
+	}
+	else if (crc != check)
+	{
+		fprintf (stderr, "%s", KRED);
+		fprintf (stderr, "SACCH (CRC ERR)");
+		fprintf (stderr, "%s", KNRM);
+	}
+
+	if (crc == check)
+		state->nxdn_sacch_frame_segcrc[sf_num] = 0;
+	else state->nxdn_sacch_frame_segcrc[sf_num] = 1;
+
+	//entire superframe has good crc
+	uint8_t crc_sf_check = 0;
+	for (int i = 0; i < 4; i++)
+		crc_sf_check += state->nxdn_sacch_frame_segcrc[i];
+
+	//values for storage and which parts to store
+	int sf_full = 26; //full size of a sacch frame, minus CRC6
+	int sf_size = 18; //size of superframe portion (18 bits)
+	int sf_end  = 0;  //end of sf
+	int sf_idx = sf_size*sf_pof;  //index position for this frame compared to super frame
+	int bf_idx = sf_full-sf_size; //index position for buffer to superframe
+
+	if (sf_fb && sf_pof) //single unit message
+		memcpy(state->dmr_pdu_sf[0]+0, trellis_buf+bf_idx, sf_size*sizeof(uint8_t));
+	else //multiple unit message
+		memcpy(state->dmr_pdu_sf[0]+sf_idx, trellis_buf+bf_idx, sf_size*sizeof(uint8_t));
+
+	//if force application of scrambler key, then let's reset, regardless of CRC check
+	if (sf_fb && state->M == 1)
+		state->payload_miN = 0;
+
+	//currently using static values so event log will log something, and do wav files, etc
+	//disable this is random false positive for this lich code triggers this often enough
+	if (crc == check)
+	{
+		state->gi[0] = 0;
+		state->nxdn_last_ran = 7;
+		state->nxdn_last_tg = 777;
+		state->nxdn_last_rid = 777;
+		sprintf (state->generic_talker_alias[0], "%s", "JPN DCR");
+		sprintf (state->event_history_s[0].Event_History_Items[0].alias, "%s; ", "JPN DCR");
+
+		//sf_fb is the head message in a multi part, or the only message in a single part message
+		if (sf_fb)
+			state->payload_miN = 0;
+	}
+
+	//check for valid crc on single, or on all received
+	if ( (sf_fb && sf_pof && crc == check) || //single frame
+	     (sf_num == sf_end && crc_sf_check == 0)         ) //multi part frame
+	{
+		uint8_t cipher = (uint16_t) convert_bits_into_output(state->dmr_pdu_sf[0]+0, 2);
+		uint16_t user_code = (uint16_t) convert_bits_into_output(state->dmr_pdu_sf[0]+2, 9);
+		fprintf (stderr, "UC: %03d; ", user_code);
+		if (cipher == 0x01)
+		{
+			fprintf (stderr, "Scrambler; ");
+			state->nxdn_cipher_type = 1;
+			if (state->R != 0)
+				fprintf (stderr, "Key: %lld; ", state->R);
+		}
+		else if (cipher != 0x00)
+		{
+			fprintf (stderr, "Reserved Comms: %d; ", cipher);
+		}
+
+		//set enc bit here so we can tell playSynthesizedVoice whether or not to play enc traffic
+		if (state->nxdn_cipher_type != 0)
+			state->dmr_encL = 1;
+		if (state->nxdn_cipher_type == 0 || state->R != 0)
+			state->dmr_encL = 0;
+
+		//this always appears to be 0, but could be other values
+		uint8_t mfid = (uint16_t) convert_bits_into_output(state->dmr_pdu_sf[0]+11, 7);
+		if (mfid != 0)
+			fprintf (stderr, "MFID: %02X; ", mfid);
+
+		//multi-part message, continue decoding
+		if (sf_fb == 0 && sf_num == 0)
+		{
+
+			fprintf (stderr, "\n");
+
+			//can't find definitions for these elements, even when MT == 1 and MFID == 0
+			unsigned long long int mes_hex = (unsigned long long int ) convert_bits_into_output(state->dmr_pdu_sf[0]+18, 54);
+			fprintf (stderr, " Message: %014llX; ", mes_hex << 0);
+
+		}
+	}
+
+	if (opts->payload == 1)
+	{
+		fprintf (stderr, "\n DCR SACCH ");
+		for (int i = 0; i < 4; i++)
+			fprintf (stderr, "[%02X]", m_data[i]);
+
+		if (sf_num == sf_end)
+		{
+			fprintf (stderr, "\n DCR SFULL ");
+			for (int i = 0; i < 9; i++)
+				fprintf (stderr, "[%02X]", (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0]+(i*8), 8));
+		}
+
+	}
+
+	//clear out if run, or crc error
+	if (sf_num == sf_end)
+	{
+		memset (state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+		memset (state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+		memset (state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+	}
+
+}
+
+//PICH or TCH 144 bit (JPN DCR)
+//SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
+void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
+{
+	uint8_t deperm[144]; //144
+	uint8_t depunc[192]; //192
+	uint8_t trellis_buf[96]; //96
+	uint16_t crc = 1; //crc calculated by function
+	uint16_t check = 0; //crc from payload for comparison
+	int out;
+
+	memset (deperm, 0, sizeof(deperm));
+	memset (depunc, 0, sizeof(depunc));
+
+	for (int i=0; i<144; i++)
+		deperm[PERM_16_9[i]] = bits[i];
+	out = 0;
+	for (int i=0; i<144; i+=3) {
+		depunc[out++] = deperm[i+0];
+		depunc[out++] = 0;
+		depunc[out++] = deperm[i+1];
+		depunc[out++] = deperm[i+2];
+	}
+
+	//switch to the convolutional decoder
+	uint8_t temp[200];
+	uint8_t s0;
+  uint8_t s1;
+	uint8_t m_data[20]; //13
+	memset (temp, 0, sizeof(temp));
+	memset (m_data, 0, sizeof(m_data));
+	memset (trellis_buf, 0, sizeof(trellis_buf));
+
+	for (int i = 0; i < 192; i++)
+		temp[i] = depunc[i] << 1;
+
+	CNXDNConvolution_start();
+  for (int i = 0; i < 96; i++)
+  {
+    s0 = temp[(2*i)];
+    s1 = temp[(2*i)+1];
+
+    CNXDNConvolution_decode(s0, s1);
+  }
+
+  CNXDNConvolution_chainback(m_data, 92);
+
+	for(int i = 0; i < 12; i++)
+  {
+    trellis_buf[(i*8)+0] = (m_data[i] >> 7) & 1;
+    trellis_buf[(i*8)+1] = (m_data[i] >> 6) & 1;
+    trellis_buf[(i*8)+2] = (m_data[i] >> 5) & 1;
+    trellis_buf[(i*8)+3] = (m_data[i] >> 4) & 1;
+    trellis_buf[(i*8)+4] = (m_data[i] >> 3) & 1;
+    trellis_buf[(i*8)+5] = (m_data[i] >> 2) & 1;
+    trellis_buf[(i*8)+6] = (m_data[i] >> 1) & 1;
+    trellis_buf[(i*8)+7] = (m_data[i] >> 0) & 1;
+  }
+
+	crc = crc12f (trellis_buf, 84); //80
+	for (int i = 0; i < 12; i++)
+	{
+		check = check << 1;
+		check = check | trellis_buf[84+i]; //80
+	}
+
+	//debug
+	// if (crc == check)
+		// fprintf (stderr, " Pass 1 ");
+
+	//if the crc fails, attempt again with the other trellis decoder
+	if (crc != check)
+	{
+		//debug
+		// fprintf (stderr, " Pass 2 ");
+		crc = 1; check = 0;
+		memset (trellis_buf, 0, sizeof(trellis_buf));
+		memset (m_data, 0, sizeof(m_data));
+		trellis_decode(trellis_buf, depunc, 92);
+		//fill m_data bytes with trellis_buf
+		for(int i = 0; i < 12; i++)
+			m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i*8], 8);
+		crc = crc12f (trellis_buf, 84);
+		for (int i = 0; i < 12; i++)
+		{
+			check = check << 1;
+			check = check | trellis_buf[i+84];
+		}
+	}
+
+	//STD-T98 DCR suggests TCH1 has data, and TCH2 will be zero fill
+	//could vary by PDU, but limited data points suggests the same
+	if (crc == check)
+	{
+		uint8_t  opcode = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0], 8);
+		uint8_t  gi     = trellis_buf[16];
+		uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
+		uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
+
+		//may only be relevant on MFID 0x30 "F.R.C." Radios
+		if (opcode == 0x0F)
+		{
+			fprintf (stderr, "\n ");
+			fprintf (stderr, "Source: %d; Target: %d; ", source, target);
+			if (gi)
+				fprintf (stderr, "Private; ");
+			else fprintf (stderr, "Group; ");
+			
+			fprintf (stderr, "Data Preamble; ");
+			uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+			fprintf (stderr, "Countdown: %d; ", countdown);
+
+		}
+
+		//may only be relevant on MFID 0x30 "F.R.C." Radios
+		if (opcode == 0x32)
+		{
+			fprintf (stderr, "\n ");
+			fprintf (stderr, "Source: %d; Target: %d; ", source, target);
+			if (gi)
+				fprintf (stderr, "Private; ");
+			else fprintf (stderr, "Group; ");
+			
+			fprintf (stderr, "Precoded Message; ");
+			uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+			fprintf (stderr, "Index#: %d;", idx);
+
+		}
+
+		// if (opcode == 0x00)
+		// {
+		// 	fprintf (stderr, "\n NULL TCH; ");
+		// }
+			
+	}
+	else if (opts->payload == 0)
+	{
+		fprintf (stderr, "\n ");
+		fprintf (stderr, "%s", KRED);
+		fprintf (stderr, "TCH (CRC ERR)");
+		fprintf (stderr, "%s", KNRM);
+	}
+
+	if (opts->payload == 1)
+	{
+		fprintf (stderr, "\n");
+		fprintf (stderr, " TCH Payload ");
+		for (int i = 0; i < 12; i++)
+		{
+			fprintf (stderr, "[%02X]", m_data[i]);
+		}
+		if (crc != check && opts->payload == 1)
+		{
+			fprintf (stderr, "%s", KRED);
+			fprintf (stderr, " (CRC ERR)");
+			fprintf (stderr, "%s", KNRM);
+		}
+	}
+
+	UNUSED(state);
+
+}
+
 void nxdn_deperm_facch2_udch(dsd_opts * opts, dsd_state * state, uint8_t bits[348], uint8_t type)
 {
 	uint8_t deperm[348]; //348
@@ -781,6 +1178,9 @@ void nxdn_deperm_cac(dsd_opts * opts, dsd_state * state, uint8_t bits[300])
 		// if (crc != 0) fprintf (stderr, " CRC ERR ");
 
 	}
+
+	//when on a CC, rotate the symbol out file every hour, if enabled
+  rotate_symbol_out_file(opts, state);
 
 }
 
@@ -1151,7 +1551,7 @@ void nxdn_message_type (dsd_opts * opts, dsd_state * state, uint8_t MessageType)
 	//RTCH Outbound will take precedent when differences may occur (except CALL_ASSGN)
 	fprintf (stderr, "%s", KYEL);
 	if      (MessageType == 0x10) fprintf(stderr, " IDLE");
-	else if (MessageType == 0x00) fprintf(stderr, " CALL_RESP");
+	// else if (MessageType == 0x00) fprintf(stderr, " CALL_RESP");
 	else if (MessageType == 0x01) fprintf(stderr, " VCALL");
 	else if (MessageType == 0x02) fprintf(stderr, " VCALL_REC_REQ");
 	else if (MessageType == 0x03) fprintf(stderr, " VCALL_IV");
@@ -1182,7 +1582,7 @@ void nxdn_message_type (dsd_opts * opts, dsd_state * state, uint8_t MessageType)
 	else if (MessageType == 0x39) fprintf(stderr, " SDCALL_REQ_USERDATA");
 	else if (MessageType == 0x3B) fprintf(stderr, " SDCALL_RESP");
 	else if (MessageType == 0x3F) fprintf(stderr, " ALIAS");
-	else fprintf(stderr, " Unknown M-%02X", MessageType);
+	else fprintf(stderr, " Unknown Message Type: %02X;", MessageType);
 	fprintf (stderr, "%s", KNRM);
 
 	//Zero out stale values on DISC or TX_REL only (IDLE messaages occur often on NXDN96 VCH, and randomly on Type-C FACCH1 steals for some reason)

@@ -73,7 +73,8 @@ void M17decodeCSD(dsd_state * state, unsigned long long int dst, unsigned long l
   //evaluate dst and src, and determine if they need to be converted to callsign
   int i;
   char c;
-
+  memset (state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
+  memset (state->m17_src_csd, 0, sizeof(state->m17_src_csd));
   if (dst == 0xFFFFFFFFFFFF)
     fprintf (stderr, " DST: BROADCAST");
   else if (dst == 0)
@@ -85,6 +86,7 @@ void M17decodeCSD(dsd_state * state, unsigned long long int dst, unsigned long l
     fprintf (stderr, " DST: ");
     for (i = 0; i < 9; i++)
     {
+      if (dst == 0) break;
       c = b40[dst % 40];
       state->m17_dst_csd[i] = c;
       fprintf (stderr, "%c", c);
@@ -110,6 +112,7 @@ void M17decodeCSD(dsd_state * state, unsigned long long int dst, unsigned long l
     fprintf (stderr, " SRC: ");
     for (i = 0; i < 9; i++)
     {
+      if (src == 0) break;
       c = b40[src % 40];
       state->m17_src_csd[i] = c;
       fprintf (stderr, "%c", c);
@@ -2466,6 +2469,10 @@ void encodeM17STR(dsd_opts * opts, dsd_state * state)
     if (opts->use_ncurses_terminal == 1)
       ncursesPrinter(opts, state);
 
+    //slot 1
+    watchdog_event_history(opts, state, 0);
+    watchdog_event_current(opts, state, 0);
+
   }
 
   //SEND EOTX to reflector
@@ -3825,6 +3832,10 @@ void processM17IPF(dsd_opts * opts, dsd_state * state)
     //refresh ncurses printer, if enabled
     if (opts->use_ncurses_terminal == 1)
       ncursesPrinter(opts, state);
+
+    //slot 1
+    watchdog_event_history(opts, state, 0);
+    watchdog_event_current(opts, state, 0);
 
     //clear frame
     memset (ip_frame, 0, sizeof(ip_frame));

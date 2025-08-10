@@ -68,13 +68,14 @@ void playMbeFiles (dsd_opts * opts, dsd_state * state, int argc, char **argv)
   int i;
   char imbe_d[88];
   char ambe_d[49];
+  srand(time(NULL)); //random seed for some file names using random numbers in file name
 
   for (i = state->optind; i < argc; i++)
   {
     sprintf (opts->mbe_in_file, "%s", argv[i]);
     openMbeInFile (opts, state);
     mbe_initMbeParms (state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
-    fprintf (stderr, "playing %s\n", opts->mbe_in_file);
+    fprintf (stderr, "\n playing %s\n", opts->mbe_in_file);
     while (feof (opts->mbe_in_f) == 0)
     {
       if (state->mbe_file_type == 0)
@@ -99,6 +100,10 @@ void playMbeFiles (dsd_opts * opts, dsd_state * state, int argc, char **argv)
           memcpy (state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
           playSynthesizedVoiceFM (opts, state);
         }
+      }
+      else if (state->mbe_file_type == 3)
+      {
+        read_sdrtrunk_json_format (opts, state);
       }
       else if (state->mbe_file_type > 0) //ambe files
       {
@@ -145,6 +150,7 @@ void playMbeFiles (dsd_opts * opts, dsd_state * state, int argc, char **argv)
         cleanupAndExit (opts, state);
       }
     }
+    fclose(opts->mbe_in_f); //close file after playing it
   }
 }
 
@@ -383,7 +389,8 @@ processMbeFrame (dsd_opts * opts, dsd_state * state, char imbe_fr[8][23], char a
     //increment vc counter by one.
     state->p25vc++;
 
-    if (opts->mbe_out_f != NULL && state->dmr_encL == 0) //only save if this bit not set
+    // if (opts->mbe_out_f != NULL && state->dmr_encL == 0) //only save if this bit not set
+    if (opts->mbe_out_f != NULL) // && state->dmr_encL == 0) //only save if this bit not set //TODO: Fix this checkdown
     {
       saveImbe4400Data (opts, state, imbe_d);
     }
@@ -775,7 +782,7 @@ processMbeFrame (dsd_opts * opts, dsd_state * state, char imbe_fr[8][23], char a
           if(state->payload_algid == 0x02)
           {
             n = 0;
-            hytera_enhanced_enc_setup(opts, state, state->R, state->payload_mi);
+            hytera_enhanced_rc4_setup(opts, state, state->R, state->payload_mi);
           }
 
           //Load Keystream Octet Bytes directly into keystream array //TODO: Convert to unpack function
@@ -802,8 +809,9 @@ processMbeFrame (dsd_opts * opts, dsd_state * state, char imbe_fr[8][23], char a
         //last bit
         ambe_d[48] ^= state->ks_bitstreamL[state->bit_counterL++];
 
-        //skip the next 7 bits of the array
-        state->bit_counterL += 7;
+        //skip the next 7 bits of the array (if not Hytera Enhanced)
+        if(state->payload_algid != 0x02)
+          state->bit_counterL += 7;
 
         //increment vc counter by one
         state->DMRvcL++;
@@ -1152,7 +1160,7 @@ processMbeFrame (dsd_opts * opts, dsd_state * state, char imbe_fr[8][23], char a
           if(state->payload_algidR == 0x02)
           {
             n = 0;
-            hytera_enhanced_enc_setup(opts, state, state->RR, state->payload_miR);
+            hytera_enhanced_rc4_setup(opts, state, state->RR, state->payload_miR);
           }
 
           //Load Keystream Octet Bytes directly into keystream array
@@ -1179,8 +1187,9 @@ processMbeFrame (dsd_opts * opts, dsd_state * state, char imbe_fr[8][23], char a
         //last bit
         ambe_d[48] ^= state->ks_bitstreamR[state->bit_counterR++];
 
-        //skip the next 7 bits of the array
-        state->bit_counterR += 7;
+        //skip the next 7 bits of the array (if not Hytera Enhanced)
+        if(state->payload_algidR != 0x02)
+          state->bit_counterR += 7;
 
         //increment vc counter by one
         state->DMRvcR++;

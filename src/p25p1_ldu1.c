@@ -26,6 +26,11 @@
 void
 processLDU1 (dsd_opts* opts, dsd_state* state)
 {
+
+  //push current slot to 0, just in case swapping p2 to p1
+  //or stale slot value from p2 and then decoding a pdu
+  state->currentslot = 0;
+  
   // extracts IMBE frames from LDU frame
   int i;
   uint8_t lcformat[9], mfid[9], lcinfo[57];
@@ -513,11 +518,11 @@ processLDU1 (dsd_opts* opts, dsd_state* state)
   {
     state->dmr_alias_format[0] = 0x02;
     if (lsd_hex2 > 8) lsd_hex2 = 8; //sanity check
-    state->dmr_alias_len[0] = lsd_hex2;
+    state->dmr_alias_block_len[0] = lsd_hex2;
     state->data_block_counter[0] = 0;
   }
 
-  if ( (k >= state->dmr_alias_len[0]) && (state->dmr_alias_format[0] == 0x02) )
+  if ( (k >= state->dmr_alias_block_len[0]) && (state->dmr_alias_format[0] == 0x02) )
   {
     //storage for completed string
     char str[16]; int wr = 0; int tsrc = state->lastsrc; int z = 0; k = 0;

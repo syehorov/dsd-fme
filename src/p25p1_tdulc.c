@@ -215,6 +215,11 @@ read_zeros(dsd_opts* opts, dsd_state* state, AnalogSignal* analog_signal_array, 
 void
 processTDULC (dsd_opts* opts, dsd_state* state)
 {
+
+  //push current slot to 0, just in case swapping p2 to p1
+  //or stale slot value from p2 and then decoding a pdu
+  state->currentslot = 0;
+  
   int i;
   uint8_t lcinfo[57], lcformat[9], mfid[9];
 
@@ -452,8 +457,8 @@ processTDULC (dsd_opts* opts, dsd_state* state)
     state->aout_gain = opts->audio_gain;
 
   //zero out MI, key, alg
-  state->payload_miP = 0;
-  state->payload_algid = 0;
-  state->payload_keyid = 0;
+  // state->payload_miP = 0;
+  // state->payload_algid = 0;
+  // state->payload_keyid = 0;
 
 }

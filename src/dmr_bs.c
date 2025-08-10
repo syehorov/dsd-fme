@@ -303,30 +303,65 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
   //check for a rc burst with bptc or 34 rate data in it (testing only)
   // #define RC_TESTING //disable if not in use
   #ifdef RC_TESTING
-  if ( (strcmp (sync, DMR_BS_DATA_SYNC) != 0) && (strcmp (sync, DMR_BS_VOICE_SYNC) != 0) &&
-       ( (internalslot == 0 && vc1 == 6) ||  (internalslot == 1 && vc2 == 6) )              )
+
+  //skip the vc counter, just look at the QR and P/Pi if not voice or data sync pattern
+  if ( (strcmp (sync, DMR_BS_DATA_SYNC) != 0) && (strcmp (sync, DMR_BS_VOICE_SYNC) != 0) )
   {
 
-    //if the QR FEC is good, and the P/PI bit is on for RC
-    if (QR_16_7_6_decode(emb_pdu) && emb_pdu[4])
+    //Golay_20_8_decode FEC for the burst type (SlotType)
+    unsigned char SlotType[20];
+    memset (SlotType, 0, sizeof(SlotType));
+    uint8_t k = 61;
+    for (uint8_t i = 0; i < 5; i++)
     {
-      fprintf (stderr,"%s ", timestr);
+      SlotType[(i*2)+0] = (state->dmr_stereo_payload[k+0] >> 1) & 1;
+      SlotType[(i*2)+1] = (state->dmr_stereo_payload[k++] >> 0) & 1;
+    }
+    k = 90;
+    for (uint8_t i = 0; i < 5; i++)
+    {
+      SlotType[(i*2)+10] = (state->dmr_stereo_payload[k+0] >> 1) & 1;
+      SlotType[(i*2)+11] = (state->dmr_stereo_payload[k++] >> 0) & 1;
+    }
 
-      if (opts->inverted_dmr == 0)
-        fprintf (stderr,"Sync: +RC   ");
-      else fprintf (stderr,"Sync: -RC   ");
+    //if the QR FEC is good, tact/cach FEC is good, and slot type burst FEC is good, and the P/PI bit is on for RC
+    //NOTE: This can still trigger on bad signal when it should be a data sync pattern but signal drops out or
+    //occassionally on p_clear with trunking tuner logic active and partial stale dibits in the buffer
+    if (QR_16_7_6_decode(emb_pdu) && emb_pdu[4] && tact_okay == 1) //during voice test
+    {
 
-      dmr_data_sync (opts, state);
+      if (Golay_20_8_decode(SlotType))
+      {
+        fprintf (stderr,"%s ", timestr);
+        if (opts->inverted_dmr == 0)
+          fprintf (stderr,"Sync: +RC   ");
+        else fprintf (stderr,"Sync: -RC   ");
 
-      dmr_data_burst_handler(opts, state, (uint8_t *)dummy_bits, 0xEB);
+        dmr_data_sync (opts, state);
+      }
+
+      for (i = 0; i < 48; i++)
+        state->dmr_embedded_signalling[internalslot][5][i] = syncdata[i];
 
       dmr_sbrc (opts, state, emb_pdu[4]);
 
-      if (internalslot == 0)
-        vc1 = 7;
-      else vc2 = 7;
+      emb_ok = 1;
 
-      goto SKIP;
+      //give an audio cue when this happens (low, high)
+      beeper (opts, state, internalslot, 40, 86, 3);
+      beeper (opts, state, internalslot, 80, 86, 3);
+
+      //put into Event History
+      state->event_history_s[0].Event_History_Items[internalslot].color_pair = 4;
+      watchdog_event_datacall (opts, state, 0, 0, "DMR Reverse Channel P/PI Indicator On (FEC Okay);", internalslot);
+      push_event_history (&state->event_history_s[internalslot]);
+      init_event_history (&state->event_history_s[internalslot], 0, 1);
+
+      if (Golay_20_8_decode(SlotType))
+      {
+        skipcount++;
+        goto SKIP;
+      }
 
     }
 
@@ -425,6 +460,9 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
 
     if (internalslot == 0 && vc1 == 6)
     {
+      //this needs to run prior to embedded link control
+      if (state->payload_algid == 0x02)
+        hytera_enhanced_alg_refresh(state);
       //process embedded link control
       fprintf (stderr, "\n");
       dmr_data_burst_handler(opts, state, (uint8_t *)dummy_bits, 0xEB);
@@ -435,6 +473,9 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
 
     if (internalslot == 1 && vc2 == 6)
     {
+      //this needs to run prior to embedded link control
+      if (state->payload_algidR == 0x02)
+        hytera_enhanced_alg_refresh(state);
       //process embedded link control
       fprintf (stderr, "\n");
       dmr_data_burst_handler(opts, state, (uint8_t *)dummy_bits, 0xEB);
@@ -584,6 +625,14 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
     ncursesPrinter(opts, state);
   }
 
+  //slot 1
+  watchdog_event_history(opts, state, 0);
+  watchdog_event_current(opts, state, 0);
+
+  //slot 2 for TDMA systems
+  watchdog_event_history(opts, state, 1);
+  watchdog_event_current(opts, state, 1);
+
   //
   if (timestr != NULL)
   {
@@ -628,6 +677,7 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
   }
   else if (state->payload_algid == 0x02)
   {
+    hytera_enhanced_alg_refresh(state);
     state->currentslot = 0;
     dmr_alg_refresh (opts, state);
   }
@@ -638,6 +688,7 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
   }
   else if (state->payload_algidR == 0x02)
   {
+    hytera_enhanced_alg_refresh(state);
     state->currentslot = 1;
     dmr_alg_refresh (opts, state);
   }
@@ -958,6 +1009,7 @@ void dmrBSBootstrap (dsd_opts * opts, dsd_state * state)
     else if (state->payload_algid == 0x02)
     {
       state->currentslot = 0;
+      hytera_enhanced_alg_refresh(state);
       dmr_alg_refresh (opts, state);
     }
     if (state->payload_algidR >= 0x21)
@@ -967,6 +1019,7 @@ void dmrBSBootstrap (dsd_opts * opts, dsd_state * state)
     }
     else if (state->payload_algid == 0x02)
     {
+      hytera_enhanced_alg_refresh(state);
       state->currentslot = 1;
       dmr_alg_refresh (opts, state);
     }
