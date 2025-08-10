@@ -1,0 +1,13 @@
+Source: dsd-fme
+Section: utils
+Priority: optional
+Maintainer: Serhii Yehorov <s.yegorov@gmail.com>
+Build-Depends: debhelper-compat (= 13), cmake, g++, libitpp-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/lwvmobile/dsd-fme
+Rules-Requires-Root: no
+
+Package: dsd-fme
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Digital Speech Decoder - Florida Man Edition
