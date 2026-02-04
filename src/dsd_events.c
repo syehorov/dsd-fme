@@ -213,16 +213,21 @@ void watchdog_event_history (dsd_opts * opts, dsd_state * state, uint8_t slot)
 
     event_struct->Event_History_Items[0].write = 1; //written, or pushed at this point
 
-    if (slot == 0 && opts->wav_out_f != NULL)
+    if (opts->static_wav_file == 0)
     {
-      opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, event_struct);
-      opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
-    }
-      
-    else if (slot == 1 && opts->wav_out_fR != NULL)
-    {
-      opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir, event_struct);
-      opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+
+      if (slot == 0 && opts->wav_out_f != NULL)
+      {
+        opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, event_struct);
+        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, 8000, 0);
+      }
+        
+      else if (slot == 1 && opts->wav_out_fR != NULL)
+      {
+        opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir, event_struct);
+        opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, 8000, 0);
+      }
+
     }
       
     push_event_history (event_struct);
@@ -690,7 +695,7 @@ void watchdog_event_current (dsd_opts * opts, dsd_state * state, uint8_t slot)
 
     if (state->ea_mode == 1)
     {
-      sprintf (event_string, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; SITE: %d:%d.%04X; %s;", datestr, timestr, sys_string, target_id, source_id, channel, sys_id1, sys_id2, sys_id3, sup_str);
+      sprintf (event_string, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; SITE: %d:%d.%04X; %s; ", datestr, timestr, sys_string, target_id, source_id, channel, sys_id1, sys_id2, sys_id3, sup_str);
     }
     else
     {

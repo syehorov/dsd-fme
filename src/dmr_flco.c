@@ -56,6 +56,31 @@ void dmr_flco (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[], uint32_t C
   target = (uint32_t)ConvertBitIntoBytes(&lc_bits[24], 24); //Target or Talk Group
   source = (uint32_t)ConvertBitIntoBytes(&lc_bits[48], 24);
 
+  //Kenwood w/ Scrambler Application on DMR (disable this if clash with other link control, its obscure)
+  uint8_t is_kenwood_sc = 0;
+  if (*IrrecoverableErrors == 0 && CRCCorrect == 1 && pf == 1 && fid == 0x20 && (so & 0x40) == 0x40)
+  {
+    pf = 0; //turn off PF flag
+    fid = 0; //unclear if this signals FID (or is cipher type for scrambler)
+
+    //NOTE: bit counter reset is handled after vc6 voice now
+
+    is_kenwood_sc = 1;
+
+    //if forcing a keystream, flip the encryption bit for this to unmute
+    if (state->ken_sc == 1)
+      so ^= 0x40;
+  }
+
+  //Kirisun
+  if (*IrrecoverableErrors == 0 && CRCCorrect == 1 && fid == 0x0A) //&& (so & 0x40) == 0x40
+  {
+      //disable late entry for DMRA, Flag 3 if encrypted, 0 if not
+      if (so & 0x40)
+        opts->dmr_le = 3;
+      else opts->dmr_le = 0;
+  }
+
   //read ahead a little to get this for the xpt flag
   if (*IrrecoverableErrors == 0 && flco == 0x09 && fid == 0x68)
   {
@@ -294,8 +319,8 @@ void dmr_flco (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[], uint32_t C
     }
 
     //unknown other manufacturer or OTA ENC, etc.
-    //removed tait from the list, added hytera 0x08
-    if (fid != 0 && fid != 0x68 && fid != 0x10 && fid != 0x08)
+    //removed tait from the list, added hytera 0x08, added Kirisun and KW Scrambler LC
+    if (fid != 0 && fid != 0x68 && fid != 0x10 && fid != 0x08 && fid != 0x0A && is_kenwood_sc == 0)
     {
       if (type == 1) fprintf (stderr, "%s \n", KYEL);
       if (type == 2) fprintf (stderr, "%s \n", KYEL);
@@ -638,6 +663,7 @@ void dmr_flco (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[], uint32_t C
     }
 
     //should rework this back into the upper portion
+    if (fid == 0x0A) fprintf (stderr, "Kirisun ");
     if (fid == 0x68) fprintf (stderr, "Hytera ");
     if (is_xpt) fprintf (stderr, "XPT ");
     if (fid == 0x68 && flco == 0x00)
@@ -650,6 +676,9 @@ void dmr_flco (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[], uint32_t C
       fprintf (stderr, "Private ");
       state->gi[slot] = 1;
     }
+
+    if (is_kenwood_sc)
+      fprintf(stderr, "Kenwood Scrambler ");
 
     fprintf(stderr, "Call ");
 

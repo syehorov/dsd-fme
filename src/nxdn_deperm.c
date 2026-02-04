@@ -25,26 +25,45 @@
 #include "dsd.h"
 #include "nxdn_const.h"
 
-//NOTE: Descrambling was having an issue without a value inside the brackets, but only when
-//the PARITY table was disabled, was this due to a memory issue or overflow?
-static const uint8_t scramble_t[182] = { //values are the position values we need to invert in the descramble
-	2, 5, 6, 7, 10, 12, 14, 16, 17, 22, 23, 25, 26, 27, 28, 30, 33, 34, 36, 37, 38, 41, 45, 47,
-	52, 54, 56, 57, 59, 62, 63, 64, 65, 66, 67, 69, 70, 73, 76, 79, 81, 82, 84, 85, 86, 87, 88,
-	89, 92, 95, 96, 98, 100, 103, 104, 107, 108, 116, 117, 121, 122, 125, 127, 131, 132, 134,
-	137, 139, 140, 141, 142, 143, 144, 145, 147, 151, 153, 154, 158, 159, 160, 162, 164, 165,
-	168, 170, 171, 174, 175, 176, 177, 181
-};
-
-
-//decoding functions here
-void nxdn_descramble(uint8_t dibits[], int len)
+void nxdn_pn95_dibit_scrambler(dsd_state * state, uint8_t * dibits, int len)
 {
-	for (int i=0; i<len; i++)
+
+	uint16_t lfsr = state->nxdn_pn95_seed; //default value is 228 / 0xE4
+
+	uint16_t  bit = 0;
+	uint8_t pN95[182]; memset (pN95, 0, sizeof(pN95));
+
+	for (int i = 0; i < len; i++)
 	{
-		if (scramble_t[i] >= len)
-			break;
-		dibits[scramble_t[i]] ^= 0x2;	// invert sign of scrambled dibits
+		//before feedback, take the bit
+		pN95[i] = lfsr & 1;
+
+		//since this is right shift, the taps are 0 and 4, and not 8 and 4 (9,5)
+		bit = ((lfsr >> 4) ^ (lfsr >> 0)) & 1;
+		lfsr >>= 1;
+		lfsr |= (bit << 8);
+
 	}
+
+	//convert the pN sequence to a scramble table
+	uint8_t scramble_table[182]; memset(scramble_table, 0, sizeof(scramble_table));
+	int k = 0;
+	for (int i = 0; i < len; i++)
+	{
+		if (pN95[i] == 1)
+			scramble_table[k++] = i;
+	}
+
+	//the entries into the scramble_table are the dibits (symbols) that are inverted
+	for (int i = 0; i < k; i++)
+	{
+		dibits[scramble_table[i]] ^= 0x2;
+		dibits[scramble_table[i]] &= 0x3;
+	}
+
+	//debug, make sure we don't overflow dibits array
+	// fprintf (stderr, " PN95: K: %d; Len: %d; ", k, len);
+
 }
 
 void nxdn_deperm_facch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
@@ -104,11 +123,11 @@ void nxdn_deperm_facch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
     trellis_buf[(i*8)+7] = (m_data[i] >> 0) & 1;
   }
 
-	crc = crc12f (trellis_buf, 84); //80
+	crc = crc12f (trellis_buf, 80);
 	for (int i = 0; i < 12; i++)
 	{
 		check = check << 1;
-		check = check | trellis_buf[84+i]; //80
+		check = check | trellis_buf[80+i];
 	}
 
 	//debug
@@ -127,11 +146,11 @@ void nxdn_deperm_facch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
 		//fill m_data bytes with trellis_buf
 		for(int i = 0; i < 12; i++)
 			m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i*8], 8);
-		crc = crc12f (trellis_buf, 84);
+		crc = crc12f (trellis_buf, 80);
 		for (int i = 0; i < 12; i++)
 		{
 			check = check << 1;
-			check = check | trellis_buf[i+84];
+			check = check | trellis_buf[i+80];
 		}
 	}
 
@@ -284,7 +303,7 @@ void nxdn_deperm_sacch(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 
 		fprintf (stderr, "PF 1/1");
 		if (state->nxdn_cipher_type == 1 && state->R != 0) state->payload_miN = state->R; //reset scrambler seed
-		else if (state->M == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
+		else if (state->forced_alg_id == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
 
 		if (crc == check) NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch);
 		// else if (opts->aggressive_framesync == 0) NXDN_Elements_Content_decode(opts, state, 0, nsf_sacch);
@@ -342,7 +361,7 @@ void nxdn_deperm_sacch(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 		if (part_of_frame == 0)
 		{
 			if (state->nxdn_cipher_type == 1 && state->R != 0) state->payload_miN = state->R; //reset scrambler seed
-			else if (state->M == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
+			else if (state->forced_alg_id == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
 		}
 
 		// if (crc != check)
@@ -359,13 +378,13 @@ void nxdn_deperm_sacch(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 		if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1)
 		{
 			if (state->nxdn_cipher_type == 1 && state->R != 0) state->payload_miN = state->R; //reset scrambler seed
-			else if (state->M == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
+			else if (state->forced_alg_id == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
 		}
 		//this seems to work much better now
 		else if (part_of_frame != 0 && state->nxdn_cipher_type == 0x1)
 		{
 			if (state->nxdn_cipher_type == 1 && state->R != 0) state->payload_miN = state->R; //reset scrambler seed
-			else if (state->M == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
+			else if (state->forced_alg_id == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
 
 			//advance seed by required number of turns depending on the current pf value
 			int start = 0; int end = part_of_frame;
@@ -563,12 +582,15 @@ void nxdn_deperm_sacch2(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 	int bf_idx = sf_full-sf_size; //index position for buffer to superframe
 
 	if (sf_fb && sf_pof) //single unit message
+	{
+		memset (state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
 		memcpy(state->dmr_pdu_sf[0]+0, trellis_buf+bf_idx, sf_size*sizeof(uint8_t));
+	}
 	else //multiple unit message
 		memcpy(state->dmr_pdu_sf[0]+sf_idx, trellis_buf+bf_idx, sf_size*sizeof(uint8_t));
 
 	//if force application of scrambler key, then let's reset, regardless of CRC check
-	if (sf_fb && state->M == 1)
+	if (sf_fb && state->forced_alg_id == 1)
 		state->payload_miN = 0;
 
 	//currently using static values so event log will log something, and do wav files, etc
@@ -579,8 +601,10 @@ void nxdn_deperm_sacch2(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 		state->nxdn_last_ran = 7;
 		state->nxdn_last_tg = 777;
 		state->nxdn_last_rid = 777;
-		sprintf (state->generic_talker_alias[0], "%s", "JPN DCR");
-		sprintf (state->event_history_s[0].Event_History_Items[0].alias, "%s; ", "JPN DCR");
+
+		//disabled with CSM going into Alias Value
+		// sprintf (state->generic_talker_alias[0], "%s", "JPN DCR");
+		// sprintf (state->event_history_s[0].Event_History_Items[0].alias, "%s; ", "JPN DCR");
 
 		//sf_fb is the head message in a multi part, or the only message in a single part message
 		if (sf_fb)
@@ -652,12 +676,18 @@ void nxdn_deperm_sacch2(dsd_opts * opts, dsd_state * state, uint8_t bits[60])
 		memset (state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
 		memset (state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
 	}
+	else if (sf_fb && sf_pof) //single
+	{
+		memset (state->dmr_pdu_sf[0], 0, sizeof(state->dmr_pdu_sf[0]));
+		memset (state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+		memset (state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+	}
 
 }
 
 //PICH or TCH 144 bit (JPN DCR)
 //SEE: https://web.archive.org/web/20150417175725/http://arib.or.jp/english/html/overview/doc/1-STD-T98v1_4.pdf
-void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
+void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144], uint8_t lich)
 {
 	uint8_t deperm[144]; //144
 	uint8_t depunc[192]; //192
@@ -714,11 +744,11 @@ void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
     trellis_buf[(i*8)+7] = (m_data[i] >> 0) & 1;
   }
 
-	crc = crc12f (trellis_buf, 84); //80
+	crc = crc12f (trellis_buf, 80);
 	for (int i = 0; i < 12; i++)
 	{
 		check = check << 1;
-		check = check | trellis_buf[84+i]; //80
+		check = check | trellis_buf[80+i];
 	}
 
 	//debug
@@ -737,11 +767,11 @@ void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
 		//fill m_data bytes with trellis_buf
 		for(int i = 0; i < 12; i++)
 			m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i*8], 8);
-		crc = crc12f (trellis_buf, 84);
+		crc = crc12f (trellis_buf, 80);
 		for (int i = 0; i < 12; i++)
 		{
 			check = check << 1;
-			check = check | trellis_buf[i+84];
+			check = check | trellis_buf[i+80];
 		}
 	}
 
@@ -754,33 +784,72 @@ void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
 		uint16_t source = (uint16_t)ConvertBitIntoBytes(&trellis_buf[24], 16);
 		uint16_t target = (uint16_t)ConvertBitIntoBytes(&trellis_buf[40], 16);
 
-		//may only be relevant on MFID 0x30 "F.R.C." Radios
-		if (opcode == 0x0F)
+		//SB0 with CSM
+		if (lich == 0x08)
 		{
-			fprintf (stderr, "\n ");
-			fprintf (stderr, "Source: %d; Target: %d; ", source, target);
-			if (gi)
-				fprintf (stderr, "Private; ");
-			else fprintf (stderr, "Group; ");
-			
-			fprintf (stderr, "Data Preamble; ");
-			uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-			fprintf (stderr, "Countdown: %d; ", countdown);
+			unsigned long long int csm = 0;
+			for (int i = 0; i < 9; i++)
+			{
+				csm <<= 4;
+				uint8_t bcd = (uint8_t)ConvertBitIntoBytes(&trellis_buf[0+(i*4)], 4);
 
+				// if (bcd < 10)
+				// 	csm |= bcd;
+				// else csm |= 0;
+
+				csm |= bcd;
+			}
+
+			fprintf (stderr, "\n ");
+			fprintf (stderr, "Call Sign Memory: %09llX; ", csm);
+
+			//Assigning this to talker alias, see notes below on decimal value
+			sprintf (state->generic_talker_alias[0], "CSM %09llX", csm);
+			sprintf (state->event_history_s[0].Event_History_Items[0].alias, "CSM %09llX", csm);
+
+			//convert from hex to string to decimal w/ sscanf
+			// char csm_str[32]; memset(csm_str, 0, sizeof(csm_str));
+			// sprintf (csm_str, "%llX", csm);
+			// unsigned long long int csm_dec = 0;
+			// sscanf(csm_str, "%lld", &csm_dec);
+
+			//the issue is that this value will exceed the bit allotment for nxdn src value (needs long long at 36-bit)
+			//even values in range 100000000 - 200000000 are 33-bits minimum
+			// fprintf (stderr, "Call Sign Memory: %09lld; ", csm_dec);
 		}
-
-		//may only be relevant on MFID 0x30 "F.R.C." Radios
-		if (opcode == 0x32)
+		//anything else
+		else
 		{
-			fprintf (stderr, "\n ");
-			fprintf (stderr, "Source: %d; Target: %d; ", source, target);
-			if (gi)
-				fprintf (stderr, "Private; ");
-			else fprintf (stderr, "Group; ");
-			
-			fprintf (stderr, "Precoded Message; ");
-			uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
-			fprintf (stderr, "Index#: %d;", idx);
+
+			//may only be relevant on MFID 0x30 "F.R.C." Radios
+			if (opcode == 0x0F)
+			{
+				fprintf (stderr, "\n ");
+				fprintf (stderr, "Source: %d; Target: %d; ", source, target);
+				if (gi)
+					fprintf (stderr, "Private; ");
+				else fprintf (stderr, "Group; ");
+				
+				fprintf (stderr, "Data Preamble; ");
+				uint8_t countdown = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+				fprintf (stderr, "Countdown: %d; ", countdown);
+
+			}
+
+			//may only be relevant on MFID 0x30 "F.R.C." Radios
+			if (opcode == 0x32)
+			{
+				fprintf (stderr, "\n ");
+				fprintf (stderr, "Source: %d; Target: %d; ", source, target);
+				if (gi)
+					fprintf (stderr, "Private; ");
+				else fprintf (stderr, "Group; ");
+				
+				fprintf (stderr, "Precoded Message; ");
+				uint8_t idx = (uint8_t)ConvertBitIntoBytes(&trellis_buf[64], 8);
+				fprintf (stderr, "Index#: %d;", idx);
+
+			}
 
 		}
 
@@ -794,14 +863,18 @@ void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144])
 	{
 		fprintf (stderr, "\n ");
 		fprintf (stderr, "%s", KRED);
-		fprintf (stderr, "TCH (CRC ERR)");
+		if (lich == 0x08)
+			fprintf (stderr, "PICH (CRC ERR)");
+		else fprintf (stderr, "TCH (CRC ERR)");
 		fprintf (stderr, "%s", KNRM);
 	}
 
 	if (opts->payload == 1)
 	{
 		fprintf (stderr, "\n");
-		fprintf (stderr, " TCH Payload ");
+		if (lich == 0x08)
+			fprintf (stderr, " PICH Payload ");
+		else fprintf (stderr, " TCH Payload ");
 		for (int i = 0; i < 12; i++)
 		{
 			fprintf (stderr, "[%02X]", m_data[i]);
@@ -1038,7 +1111,7 @@ void nxdn_deperm_cac(dsd_opts * opts, dsd_state * state, uint8_t bits[300])
 	}
 
 	//switch to the convolutional decoder
-	uint8_t temp[179];
+	uint8_t temp[350];
 	uint8_t s0;
   uint8_t s1;
 	uint8_t m_data[22]; //26
@@ -1282,7 +1355,7 @@ void nxdn_deperm_scch(dsd_opts * opts, dsd_state * state, uint8_t bits[60], uint
 		for(int i = 0; i < 4; i++)
 			m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i*8], 8);
 		crc = crc7_scch(trellis_buf, 25);
-		for (int i = 0; i < 6; i++)
+		for (int i = 0; i < 7; i++)
 		{
 			check = check << 1;
 			check = check | trellis_buf[i+25];
@@ -1304,7 +1377,7 @@ void nxdn_deperm_scch(dsd_opts * opts, dsd_state * state, uint8_t bits[60], uint
 	if (part_of_frame == 0 && state->nxdn_cipher_type == 0x1)
 	{
 		if (state->nxdn_cipher_type == 1 && state->R != 0) state->payload_miN = state->R; //reset scrambler seed
-		else if (state->M == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
+		else if (state->forced_alg_id == 1 && state->R != 0) state->payload_miN = state->R; //force reset scrambler seed
 	}
 
 	/*
@@ -1416,11 +1489,11 @@ void nxdn_deperm_facch3_udch2(dsd_opts * opts, dsd_state * state, uint8_t bits[2
 			trellis_buf[(i*8)+7] = (m_data[i] >> 0) & 1;
 		}
 
-		crc[j] = crc12f (trellis_buf, 84); //84
+		crc[j] = crc12f (trellis_buf, 80);
 		for (int i = 0; i < 12; i++)
 		{
 			check[j] = check[j] << 1;
-			check[j] = check[j] | trellis_buf[84+i]; //84
+			check[j] = check[j] | trellis_buf[80+i];
 
 		}
 
@@ -1440,11 +1513,11 @@ void nxdn_deperm_facch3_udch2(dsd_opts * opts, dsd_state * state, uint8_t bits[2
 			//fill m_data bytes with trellis_buf
 			for(int i = 0; i < 12; i++)
 				m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[i*8], 8);
-			crc[j] = crc12f (trellis_buf, 84);
+			crc[j] = crc12f (trellis_buf, 80);
 			for (int i = 0; i < 12; i++)
 			{
 				check[j] = check[j] << 1;
-				check[j] = check[j] | trellis_buf[i+84];
+				check[j] = check[j] | trellis_buf[i+80];
 			}
 		}
 
@@ -1582,6 +1655,11 @@ void nxdn_message_type (dsd_opts * opts, dsd_state * state, uint8_t MessageType)
 	else if (MessageType == 0x39) fprintf(stderr, " SDCALL_REQ_USERDATA");
 	else if (MessageType == 0x3B) fprintf(stderr, " SDCALL_RESP");
 	else if (MessageType == 0x3F) fprintf(stderr, " ALIAS");
+	//observed from #318 and found in ARIB STD-B54
+	else if (MessageType == 0x21) fprintf(stderr, " VCALL_ARIB_STD_B54");
+	else if (MessageType == 0x28) fprintf(stderr, " TX_REL_ARIB_STD_B54");
+	else if (MessageType == 0x27) fprintf(stderr, " ALIAS_ARIB_STD_B54");
+	//TODO: Add rest of ARIB STD-B54 Message Types (Also, need to add a flag F1 and F2 check here, or earlier and make a seperate one for this)
 	else fprintf(stderr, " Unknown Message Type: %02X;", MessageType);
 	fprintf (stderr, "%s", KNRM);
 

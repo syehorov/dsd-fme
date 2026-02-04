@@ -9,6 +9,8 @@
 #include "dsd.h"
 #include "dmr_const.h"
 
+// #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
+
 //A subroutine for processing each TDMA frame individually to allow for
 //processing voice and/or data on both BS slots (channels) simultaneously
 void dmrBS (dsd_opts * opts, dsd_state * state)
@@ -493,6 +495,26 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
     memcpy (m2, ambe_fr2, sizeof(m2));
     memcpy (m3, ambe_fr3, sizeof(m3));
 
+    if (state->tyt_bp == 1)
+    {
+      tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
+      tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
+      tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+    }
+
+    if (state->csi_ee == 1)
+    {
+      csi72_ambe2_codeword_keystream(state, ambe_fr);
+      csi72_ambe2_codeword_keystream(state, ambe_fr2);
+      csi72_ambe2_codeword_keystream(state, ambe_fr3);
+    }
+
+    #ifdef PRINT_AMBE72
+    ambe2_codeword_print_i(opts, ambe_fr);
+    ambe2_codeword_print_i(opts, ambe_fr2);
+    ambe2_codeword_print_i(opts, ambe_fr3);
+    #endif
+
     processMbeFrame (opts, state, NULL, ambe_fr, NULL);
     if(internalslot == 0)
     {
@@ -570,6 +592,9 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
     // run alg refresh after vc6 ambe processing
     if (internalslot == 0 && vc1 == 6) dmr_alg_refresh (opts, state);
     if (internalslot == 1 && vc2 == 6) dmr_alg_refresh (opts, state);
+
+    if (internalslot == 0 && vc1 == 6) state->static_ks_counter[0] = 0;
+    if (internalslot == 1 && vc2 == 6) state->static_ks_counter[1] = 0;
 
     if (opts->dmr_le != 2) //if not Hytera Enhanced
       dmr_late_entry_mi_fragment (opts, state, vc%7, m1, m2, m3);
@@ -699,11 +724,15 @@ void dmrBS (dsd_opts * opts, dsd_state * state)
  }
 
  //
- if (timestr != NULL)
+  if (timestr != NULL)
   {
     free (timestr);
     timestr = NULL;
   }
+
+  //reset static ks counter
+  state->static_ks_counter[0] = 0;
+  state->static_ks_counter[1] = 0;
 
 }
 
@@ -774,6 +803,9 @@ void dmrBSBootstrap (dsd_opts * opts, dsd_state * state)
   if (tact_okay != 1) goto END;
 
   internalslot = state->currentslot = tact_bits[1];
+
+  //reset static ks counter
+  state->static_ks_counter[internalslot] = 0;
 
   //Setup for first AMBE Frame
 
@@ -921,6 +953,26 @@ void dmrBSBootstrap (dsd_opts * opts, dsd_state * state)
   memcpy (m1, ambe_fr, sizeof(m1));
   memcpy (m2, ambe_fr2, sizeof(m2));
   memcpy (m3, ambe_fr3, sizeof(m3));
+
+  if (state->tyt_bp == 1)
+  {
+    tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
+    tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
+    tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+  }
+
+  if (state->csi_ee == 1)
+  {
+    csi72_ambe2_codeword_keystream(state, ambe_fr);
+    csi72_ambe2_codeword_keystream(state, ambe_fr2);
+    csi72_ambe2_codeword_keystream(state, ambe_fr3);
+  }
+
+  #ifdef PRINT_AMBE72
+  ambe2_codeword_print_i(opts, ambe_fr);
+  ambe2_codeword_print_i(opts, ambe_fr2);
+  ambe2_codeword_print_i(opts, ambe_fr3);
+  #endif
 
   if (opts->payload == 1) fprintf (stderr, "\n"); //extra line break necessary here
   // processMbeFrame (opts, state, NULL, ambe_fr, NULL);

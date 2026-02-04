@@ -90,7 +90,7 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 	//collect lich bits first, if they are good, then we can collect the rest of them
 	for (int i = 0; i < 8; i++) lich_dibits[i] = dbuf[i] = getDibit(opts, state);
 
-	nxdn_descramble (lich_dibits, 8);
+	nxdn_pn95_dibit_scrambler (state, lich_dibits, 8);
 
 	lich = 0;
 	for (int i=0; i<8; i++) lich |= (lich_dibits[i] >> 1) << (7-i);
@@ -128,7 +128,7 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 	lich = lich_full >> 1;
 
 	//special cases on DCR where parity is computed over 7 bits, and not 4 bits
-	if (lich == 0x4A || lich == 0x48 || lich == 0x46)
+	if (lich == 0x08 || lich == 0x4A || lich == 0x48 || lich == 0x46)
 		lich_parity_computed = ((lich_full >> 7) + (lich_full >> 6) + (lich_full >> 5) + (lich_full >> 4) + (lich_full >> 3) + (lich_full >> 2) + (lich_full >> 1)) & 1;
 
 	if (lich_parity_received != lich_parity_computed)
@@ -223,9 +223,13 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 		sacch2 = 1;
 		break;
 
-	//DCR Data or End Frame
+	//DCR SB0, Data or End Frame
+	case 0x08: //SB0 w/ CSM 9 digit BCD found here
+		sacch2 = 1;
+		pich_tch = 1; //observed 2nd PICH is zero fill
+		break;
 	case 0x48:
-		pich_tch = 3;
+		pich_tch = 3; //may be 1, or 2 TCH (observed possibly both)
 	case 0x4A:
 		sacch2 = 1;
 		break;
@@ -343,7 +347,7 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 	 	dbuf[i+8] = getDibit(opts, state);
 	}
 
-	nxdn_descramble (dbuf, 182); //sizeof(dbuf)
+	nxdn_pn95_dibit_scrambler (state, dbuf, 182);
 
 	//seperate our dbuf (dibit_buffer) into individual bit array
 	for (int i = 0; i < 182; i++)
@@ -465,7 +469,7 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 		if (state->rkey_array[limazulu] != 0)
 			state->R = state->rkey_array[limazulu];
 
-		if (state->R != 0 && state->M == 1) state->nxdn_cipher_type = 0x1;
+		if (state->R != 0 && state->forced_alg_id == 1) state->nxdn_cipher_type = 0x1;
 
 		//add additional time to last_sync_time for LimaZulu to hold on current frequency
 		//a little longer without affecting normal scan time on trunk_hangtime variable
@@ -521,7 +525,7 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 	if (voice && facch == 1) //facch steal 1 -- before voice
 	{
 		//force scrambler here, but with unspecified key (just use what's loaded)
-		if (state->M == 1 && state->R != 0) state->nxdn_cipher_type = 0x1;
+		if (state->forced_alg_id == 1 && state->R != 0) state->nxdn_cipher_type = 0x1;
 		//roll the voice scrambler LFSR here if key available to advance seed -- half rotation on a facch steal
 		if (state->nxdn_cipher_type == 0x1 && state->R != 0)
 		{
@@ -561,8 +565,8 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 
 	//DCR
 	if (sacch2)       nxdn_deperm_sacch2(opts, state, sacch_bits);
-	if (pich_tch & 1) nxdn_deperm_pich_tch(opts, state, facch_bits_a);
-	if (pich_tch & 2) nxdn_deperm_pich_tch(opts, state, facch_bits_b);
+	if (pich_tch & 1) nxdn_deperm_pich_tch(opts, state, facch_bits_a, lich);
+	if (pich_tch & 2) nxdn_deperm_pich_tch(opts, state, facch_bits_b, lich);
 
 	//only run facch in second slot if its not equal to the first one
 	//ideally, this would work better AFTER decoding/FEC
@@ -580,7 +584,7 @@ void nxdn_frame (dsd_opts * opts, dsd_state * state)
 		//update last voice sync time
 		state->last_vc_sync_time = time(NULL);
 		//turn on scrambler if forced by user option
-		if (state->M == 1 && state->R != 0) state->nxdn_cipher_type = 0x1;
+		if (state->forced_alg_id == 1 && state->R != 0) state->nxdn_cipher_type = 0x1;
 		//process voice frame
 		nxdn_voice (opts, state, voice, dbuf);
 	}

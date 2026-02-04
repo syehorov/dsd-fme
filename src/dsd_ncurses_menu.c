@@ -130,11 +130,13 @@ void ncursesMenu (dsd_opts * opts, dsd_state * state)
     closePulseOutput (opts);
   }
 
+  #ifndef __APPLE__
   //close OSS output
   if (opts->audio_out_type == 2 || opts->audio_out_type == 5)
   {
     close (opts->audio_out_fd);
   }
+  #endif
 
   if (opts->audio_in_type == 0) //close pulse input if it is the specified input method
   {
@@ -921,11 +923,11 @@ void ncursesMenu (dsd_opts * opts, dsd_state * state)
       //toggle enforcement of basic privacy key over enc bit set on traffic
       if (option == 4)
       {
-        if (state->M == 1 || state->M == 0x21)
+        if (state->forced_alg_id == 1 || state->forced_alg_id == 0x21)
         {
-          state->M = 0;
+          state->forced_alg_id = 0;
         }
-        else state->M = 1;
+        else state->forced_alg_id = 1;
       }
 
       if (option == 5)
@@ -951,11 +953,11 @@ void ncursesMenu (dsd_opts * opts, dsd_state * state)
       //toggle enforcement of rc4 key over missing pi header/le on DMR
       // if (option == 6)
       // {
-      //   if (state->M == 1 || state->M == 0x21)
+      //   if (state->forced_alg_id == 1 || state->forced_alg_id == 0x21)
       //   {
-      //     state->M = 0;
+      //     state->forced_alg_id = 0;
       //   }
-      //   else state->M = 0x21;
+      //   else state->forced_alg_id = 0x21;
       // }
 
       //load AES keys
@@ -1415,7 +1417,6 @@ void ncursesMenu (dsd_opts * opts, dsd_state * state)
         opts->inverted_dpmr = 1;
         opts->inverted_x2tdma = 1;
         opts->inverted_ysf = 1;
-        opts->inverted_m17 = 1;
       }
       else
       {
@@ -1423,7 +1424,6 @@ void ncursesMenu (dsd_opts * opts, dsd_state * state)
         opts->inverted_dpmr = 0;
         opts->inverted_x2tdma = 0;
         opts->inverted_ysf = 0;
-        opts->inverted_m17 = 0;
       }
 
     }
@@ -1587,10 +1587,12 @@ void ncursesMenu (dsd_opts * opts, dsd_state * state)
     openPulseOutput (opts);
   }
 
+  #ifndef __APPLE__
   if (opts->audio_out_type == 2 || opts->audio_out_type == 5)
   {
     openOSSOutput (opts);
   }
+  #endif
 
 
   if (opts->audio_in_type == 0) //reopen pulse input if it is the specified input method

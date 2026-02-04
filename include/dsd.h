@@ -59,8 +59,9 @@
 #include "p25p1_heuristics.h"
 
 //OSS support
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__CYGWIN__)
 #include <sys/soundcard.h>
-
+#endif
 #include <pulse/pulseaudio.h> //PULSE AUDIO
 #include <pulse/simple.h>     //PULSE AUDIO
 #include <pulse/error.h>      //PULSE AUDIO
@@ -317,7 +318,8 @@ typedef struct
   float audio_gainR;
   float audio_gainA;
   int audio_out;
-  int dmr_stereo_wav;
+  int dmr_stereo_wav;  //per-call wav file use (rename later)
+  int static_wav_file; //single static wav file for decoding duration
   char wav_out_dir[512];
   char wav_out_file[1024];
   char wav_out_fileR[1024];
@@ -356,10 +358,6 @@ typedef struct
   int ssize;
   int msize;
   int playfiles;
-  int m17encoder;
-  int m17encoderbrt;
-  int m17encoderpkt;
-  int m17decoderip;
   int delay;
   int use_cosine_filter;
   int unmute_encrypted_p25;
@@ -413,7 +411,6 @@ typedef struct
   short int aggressive_framesync;
 
   int frame_m17;
-  int inverted_m17;
 
   FILE *symbolfile;
   int call_alert;
@@ -429,12 +426,6 @@ typedef struct
   int udp_sockfdA; //analog 48k1
   int udp_portno;
   char udp_hostname[1024];
-
-  //M17 UDP for IP frame output
-  int m17_use_ip;     //if enabled, open UDP and broadcast IP frame
-  int m17_portno;    //default is 17000
-  int m17_udp_sock; //actual UDP socket for M17 to send to
-  char m17_hostname[1024];
 
   //tcp socket for SDR++, etc
   int tcp_sockfd;
@@ -642,7 +633,7 @@ typedef struct
   unsigned long long int K2;
   unsigned long long int K3;
   unsigned long long int K4;
-  int M;
+  uint8_t forced_alg_id;
   int menuopen;
 
   //AES Key Segments
@@ -897,6 +888,7 @@ typedef struct
   uint8_t nxdn_sacch_frame_segcrc[4];
   uint8_t nxdn_alias_block_number;
   char nxdn_alias_block_segment[4][4][8];
+  uint16_t nxdn_pn95_seed;
 
   //site/srv/cch info
   char nxdn_location_category[14];
@@ -951,15 +943,11 @@ typedef struct
   //M17 Storage
   uint8_t m17_lsf[360];
   uint8_t m17_pkt[850];
-  uint8_t m17_pbc_ct; //pbc packet counter
   uint8_t m17_str_dt; //stream contents
 
   unsigned long long int m17_dst;
   unsigned long long int m17_src;
   uint8_t m17_can; //can value that was decoded from signal
-  int m17_can_en; //can value supplied to the encoding side
-  int m17_rate;  //sampling rate for audio input
-  int m17_vox;  //vox enabled via RMS value
 
   char m17_dst_csd[20];
   char m17_src_csd[20];
@@ -967,24 +955,55 @@ typedef struct
   char m17_src_str[50];
   char m17_dst_str[50];
 
-  uint8_t m17_meta[16]; //packed meta
-  uint8_t m17_enc;      //enc type
-  uint8_t m17_enc_st;   //scrambler or data subtye
-  int m17encoder_tx;    //if TX (encode + decode) M17 Stream is enabled
-  int m17encoder_eot;   //signal if we need to send the EOT frame
+  uint8_t m17_meta[16];    //packed meta
+  uint8_t m17_aes_iv[16]; //aes iv
+  uint8_t m17_enc;        //enc type
+  uint8_t m17_enc_st;    //scrambler or data subtye
+
+  char m17_text_string[1024];
+  char m17_gnss_string[1024];
+  char m17_data_string[1024];
+  char m17_meta_string[1024];
+
+  float m17_viterbi_err;
 
   //misc str storage
   char str50a[50];
   char str50b[50];
   char str50c[50];
-  char m17dat[50];  //user supplied m17 data input string
-  char m17sms[800]; //user supplied sms text string
 
   //Codec2
   #ifdef USE_CODEC2
   struct CODEC2 *codec2_3200; //M17 fullrate
   struct CODEC2 *codec2_1600; //M17 halfrate
   #endif
+
+  //tyt_ap=1 active  
+  int tyt_ap;
+  int tyt_bp;
+  int tyt_ep;
+  // retrevis rc2
+  int retevis_ap;
+  void *rc2_context;
+
+  //kenwood scrambler on DMR with forced application
+  int ken_sc;
+
+  //anytone bp
+  int any_bp;
+
+  //baofeng ap
+  int baofeng_ap;
+
+  //connect systems ee
+  int csi_ee;
+
+  //generic ks
+  int straight_ks;
+  int straight_mod;
+
+  uint8_t static_ks_bits[2][882];
+  int static_ks_counter[2];
 
 } dsd_state;
 
@@ -995,13 +1014,6 @@ typedef struct
 //M17 Sync Patterns
 #define M17_LSF     "11113313"
 #define M17_STR     "33331131"
-//alternating with last symbol opposite of first symbol of LSF
-#define M17_PRE     "31313131"
-#define M17_PIV     "13131313"
-#define M17_PRE_LSF "3131313133331131" //Preamble + LSF
-#define M17_PIV_LSF "1313131311113313" //Preamble + LSF
-#define M17_BRT     "31331111"
-#define M17_PKT     "13113333"
 
 #define FUSION_SYNC     "31111311313113131131"
 #define INV_FUSION_SYNC "13333133131331313313"
@@ -1107,6 +1119,7 @@ void closePulseInput (dsd_opts * opts);
 void closePulseOutput (dsd_opts * opts);
 void writeSynthesizedVoice (dsd_opts * opts, dsd_state * state);
 void writeSynthesizedVoiceR (dsd_opts * opts, dsd_state * state);
+void writeSynthesizedVoiceMS (dsd_opts * opts, dsd_state * state); //short mono to stereo wav file
 void playSynthesizedVoice (dsd_opts * opts, dsd_state * state);   //short mono output slot 1
 void playSynthesizedVoiceR (dsd_opts * opts, dsd_state * state);  //short mono output slot 2
 //new float stuff
@@ -1155,6 +1168,9 @@ int readImbe4400Data (dsd_opts * opts, dsd_state * state, char *imbe_d);
 int readAmbe2450Data (dsd_opts * opts, dsd_state * state, char *ambe_d);
 void keyring(dsd_opts * opts, dsd_state * state);
 void read_sdrtrunk_json_format (dsd_opts * opts, dsd_state * state);
+void ambe2_codeword_print_f (dsd_opts * opts, char ambe_fr[4][24]);
+void ambe2_codeword_print_b (dsd_opts * opts, char ambe_fr[4][24]);
+void ambe2_codeword_print_i (dsd_opts * opts, char ambe_fr[4][24]);
 void openMbeInFile (dsd_opts * opts, dsd_state * state);
 void closeMbeOutFile (dsd_opts * opts, dsd_state * state);
 void closeMbeOutFileR (dsd_opts * opts, dsd_state * state); //tdma slot 2
@@ -1163,6 +1179,7 @@ void openMbeOutFileR (dsd_opts * opts, dsd_state * state); //tdma slot 2
 void openWavOutFile (dsd_opts * opts, dsd_state * state);
 void openWavOutFileL (dsd_opts * opts, dsd_state * state);
 void openWavOutFileR (dsd_opts * opts, dsd_state * state);
+void openWavOutFileLR (dsd_opts * opts, dsd_state * state); //stereo wav file for tdma decoded speech
 void openWavOutFileRaw (dsd_opts * opts, dsd_state * state);
 SNDFILE * open_wav_file (char * dir, char * temp_filename, uint16_t sample_rate, uint8_t ext);
 SNDFILE * close_wav_file(SNDFILE * wav_file);
@@ -1220,13 +1237,6 @@ void processDSTAR_HD (dsd_opts * opts, dsd_state * state); //DSTAR Header
 void processDSTAR_SD (dsd_opts * opts, dsd_state * state, uint8_t * sd); //DSTAR Slow Data
 void processYSF(dsd_opts * opts, dsd_state * state); //YSF
 void processM17STR(dsd_opts * opts, dsd_state * state); //M17 (STR)
-void processM17PKT(dsd_opts * opts, dsd_state * state); //M17 (PKT)
-void processM17LSF(dsd_opts * opts, dsd_state * state); //M17 (LSF)
-void processM17IPF(dsd_opts * opts, dsd_state * state); //M17 (IPF)
-void encodeM17STR(dsd_opts * opts, dsd_state * state); //M17 (STR) encoder
-void encodeM17BRT(dsd_opts * opts, dsd_state * state); //M17 (BRT) encoder
-void encodeM17PKT(dsd_opts * opts, dsd_state * state); //M17 (PKT) encoder
-void decodeM17PKT(dsd_opts * opts, dsd_state * state, uint8_t * input, int len); //M17 (PKT) decoder
 void processP2(dsd_opts * opts, dsd_state * state); //P2
 void processTSBK(dsd_opts * opts, dsd_state * state); //P25 Trunking Single Block
 void processMPDU(dsd_opts * opts, dsd_state * state); //P25 Multi Block PDU (SAP 0x61 FMT 0x15 or 0x17 for Trunking Blocks)
@@ -1254,7 +1264,7 @@ void ncursesClose ();
 
 //new NXDN Functions start here!
 void nxdn_frame (dsd_opts * opts, dsd_state * state);
-void nxdn_descramble (uint8_t dibits[], int len);
+void nxdn_pn95_dibit_scrambler(dsd_state * state, uint8_t * dibits, int len);
 //nxdn deinterleaving/depuncturing functions
 void nxdn_deperm_facch (dsd_opts * opts, dsd_state * state, uint8_t bits[144]);
 void nxdn_deperm_sacch (dsd_opts * opts, dsd_state * state, uint8_t bits[60]);
@@ -1265,7 +1275,7 @@ void nxdn_deperm_scch(dsd_opts * opts, dsd_state * state, uint8_t bits[60], uint
 void nxdn_deperm_facch3_udch2(dsd_opts * opts, dsd_state * state, uint8_t bits[288], uint8_t type);
 //DCR Mode
 void nxdn_deperm_sacch2(dsd_opts * opts, dsd_state * state, uint8_t bits[60]);
-void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144]);
+void nxdn_deperm_pich_tch(dsd_opts * opts, dsd_state * state, uint8_t bits[144], uint8_t lich);
 //MT and Voice
 void nxdn_message_type (dsd_opts * opts, dsd_state * state, uint8_t MessageType);
 void nxdn_voice (dsd_opts * opts, dsd_state * state, int voice, uint8_t dbuf[182]);
@@ -1288,6 +1298,12 @@ void CNXDNConvolution_encode(const unsigned char* in, unsigned char* out, unsign
 void CNXDNConvolution_init();
 
 //libM17 viterbi decoder
+
+//libm17 magic soft decision based viterbi
+#define SYM_PER_PLD 184
+void slice_symbols(uint16_t out[2*SYM_PER_PLD], const float inp[SYM_PER_PLD]);
+void randomize_soft_bits(uint16_t inp[SYM_PER_PLD*2]);
+void reorder_soft_bits(uint16_t outp[SYM_PER_PLD*2], const uint16_t inp[SYM_PER_PLD*2]);
 uint32_t viterbi_decode(uint8_t* out, const uint16_t* in, const uint16_t len);
 uint32_t viterbi_decode_punctured(uint8_t* out, const uint16_t* in, const uint8_t* punct, const uint16_t in_len, const uint16_t p_len);
 void viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos);
@@ -1313,6 +1329,10 @@ void NXDN_decode_site_info(dsd_opts * opts, dsd_state * state, uint8_t * Message
 void NXDN_decode_adj_site(dsd_opts * opts, dsd_state * state, uint8_t * Message);
 //Type-D SCCH Message Decoder
 void NXDN_decode_scch(dsd_opts * opts, dsd_state * state, uint8_t * Message, uint8_t direction);
+void NXDN_decode_VCALL_ARIB(dsd_opts * opts, dsd_state * state, uint8_t * Message);
+void NXDN_decode_ALIAS_ARIB(dsd_opts * opts, dsd_state * state, uint8_t * Message);
+uint32_t sjis_char_to_unicode(uint16_t sjis);
+int utf8_encode(int c, char *buf);
 
 void dPMRVoiceFrameProcess(dsd_opts * opts, dsd_state * state);
 
@@ -1585,9 +1605,6 @@ int udp_socket_connect(dsd_opts * opts, dsd_state * state);
 int udp_socket_connectA(dsd_opts * opts, dsd_state * state);
 void udp_socket_blaster(dsd_opts * opts, dsd_state * state, size_t nsam, void * data);
 void udp_socket_blasterA(dsd_opts * opts, dsd_state * state, size_t nsam, void * data);
-int m17_socket_receiver(dsd_opts * opts, void * data);
-int udp_socket_connectM17(dsd_opts * opts, dsd_state * state);
-int m17_socket_blaster(dsd_opts * opts, dsd_state * state, size_t nsam, void * data);
 
 //RC4 function prototypes
 void rc4_voice_decrypt (int drop, uint8_t keylength, uint8_t messagelength, uint8_t key[], uint8_t cipher[], uint8_t plain[]);
@@ -1605,12 +1622,29 @@ void aes_cfb_bytewise_payload_crypt (uint8_t * iv, uint8_t * key, uint8_t * in, 
 void aes_ctr_bytewise_payload_crypt (uint8_t * iv, uint8_t * key, uint8_t * payload, int type);
 void aes_ctr_bitwise_payload_crypt (uint8_t * iv, uint8_t * key, uint8_t * payload, int type);
 
+//Tytera / Retevis / Anytone / Kenwood / Misc DMR Encryption Modes
+void tyt16_ambe2_codeword_keystream(dsd_state * state, char ambe_fr[4][24], int fnum);
+void tyt_ep_aes_keystream_creation(dsd_state * state, char * input);
+void tyt_ap_pc4_keystream_creation(dsd_state * state, char * input);
+void retevis_rc2_keystream_creation(dsd_state *state, char *input);
+void ken_dmr_scrambler_keystream_creation(dsd_state * state, char * input);
+void anytone_bp_keystream_creation(dsd_state * state, char * input);
+void baofeng_ap_pc5_keystream_creation(dsd_state *state, char *input);
+void csi72_ambe2_codeword_keystream(dsd_state * state, char ambe_fr[4][24]);
+void straight_mod_xor_keystream_creation(dsd_state * state, char * input);
+
+//Kirisun
+uint32_t kirisun_lfsr(unsigned long long int mi);
+void kirisun_adv_keystream_creation(dsd_state *state);
+void kirisun_uni_keystream_creation(dsd_state *state);
+
 //Hytera Enhanced
 void hytera_enhanced_rc4_setup(dsd_opts * opts, dsd_state * state, unsigned long long int key_value, unsigned long long int mi_value);
 unsigned long long int hytera_lfsr(uint8_t * mi, uint8_t * taps, uint8_t len);
 void hytera_enhanced_alg_refresh(dsd_state * state);
 
 //LFSR to expand either a DMR 32-bit or P25/NXDN 64-bit MI into a 128-bit IV for AES
+void lfsr_64_to_128(uint8_t * iv);
 void LFSR128(dsd_state * state);
 void LFSR128n(dsd_state * state);
 void LFSR128d(dsd_state * state);
@@ -1636,6 +1670,9 @@ int ez_rs28_ess (int payload[96], int parity[168]); //ezpwd bridge for FME
 int ez_rs28_facch (int payload[156], int parity[114]); //ezpwd bridge for FME
 int ez_rs28_sacch (int payload[180], int parity[132]); //ezpwd bridge for FME
 int isch_lookup (uint64_t isch); //isch map lookup
+
+//Phase 1 NID Check
+int check_NID(char* bch_code, int* new_nac, char* new_duid, unsigned char parity);
 
 #ifdef __cplusplus
 }

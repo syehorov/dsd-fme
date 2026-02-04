@@ -335,7 +335,7 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
       //The SAP found here is the actual SAP of the message (like a P25 ndary SAP, and can chain together according to ETSI)
       fprintf (stderr, " - SAP %02d [%s] - MFID %02X [%s]", p_sap, sap_string, p_mfid, mfid_string);
 
-      //p_sap 1 on mfid 10 (moto) has been observed as the first block of LRRP data (unique fixed format?)
+      //p_sap 1 on mfid 10 MNIS Header
       if (p_mfid == 0x10 && p_sap == 1)
       {
         //add the header to the first 10 bytes of the storage (sans this header's CRC)
@@ -365,7 +365,42 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
       }
 
       //Start Setting DMR Data Packet Encryption Variables
-      if (p_sap != 1 && p_mfid == 0x10)
+      if (p_sap != 1 && p_mfid == 0x77)
+      {
+
+        fprintf (stderr, "\n Vertex Standard PDU ENC Header:");
+        fprintf (stderr, " MFID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8));
+
+        //Unsure of how similar this is to the DMRA Enc Header, but using
+        //guess work and best judgment from single sample of Vertex Enhanced
+
+        //main issue is, I don't know if the 0x01 signalled is a key id (which is known to be 0x01)
+        //or if it is an encryption alg id (alg may have to be inferred based on what is loaded in radio)
+
+        //set to 0x100 so it won't trigger any weird flags, but still has a non-zero value to be checked later
+        if (state->currentslot == 0) state->dmr_so = 0x100;
+        else state->dmr_soR = 0x100;
+
+        if (state->currentslot == 0)
+          state->payload_keyid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
+        else state->payload_keyidR = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
+        fprintf (stderr, " Key ID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8));
+
+        //going to use algid of 0x7 to signal a vertex standard enc method
+        if (state->currentslot == 0)
+          state->payload_algid = 0x7;
+        else state->payload_algidR = 0x7;
+
+        //unknown if MI, or IV is present on this header (need the AES256 Vertex PDU to compare)
+        if (state->currentslot == 0)
+          state->payload_mi = (unsigned long long int)ConvertBitIntoBytes(&dheader_bits[48], 32);
+        else state->payload_miR = (unsigned long long int)ConvertBitIntoBytes(&dheader_bits[48], 32);
+
+        //reset ks start value
+        state->data_ks_start[slot] = 0;
+
+      }
+      else if (p_sap != 1 && p_mfid == 0x10)
       {
 
         //check ENC bit, assuming this is an ENC bit, or SVC OPT like thing (or could be an opcode for the rest of the extended header)
@@ -376,7 +411,7 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
           else state->dmr_soR = 0x100;
         }
 
-        fprintf (stderr, "\n PDU ENC Header:");
+        fprintf (stderr, "\n DMRA PDU ENC Header:");
         fprintf (stderr, " MFID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8));
         fprintf (stderr, " ENC: %X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[20], 4));
 
@@ -1007,6 +1042,21 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
           if (memcmp(kaes, empt, sizeof(kaes)) != 0) akl = 1;
         }
 
+        //if still not akl, see if there is anything manually loaded into K1, K2, K3, K4 instead
+        if (akl == 0)
+        {
+          for (i = 0; i < 8; i++)
+          {
+            kaes[i+0]   = (state->K1) >> (56-(i*8)) & 0xFF;
+            kaes[i+8]   = (state->K2) >> (56-(i*8)) & 0xFF;
+            kaes[i+16]  = (state->K3) >> (56-(i*8)) & 0xFF;
+            kaes[i+24]  = (state->K4) >> (56-(i*8)) & 0xFF;
+          }
+
+          //if kaes is loaded with a key, then flag on the key loaded variable
+          if (memcmp(kaes, empt, sizeof(kaes)) != 0) akl = 1;
+        }
+
         if (R == 0 && state->R != 0) R = state->R;
 
         //easier to manually load up rather than make a loop (RC4)
@@ -1022,19 +1072,25 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
 
         //print alg/key and value if loaded
         fprintf (stderr, "\n PDU ALG: %02X; Key ID: %02X;", alg, kid);
-        if (alg != 0) fprintf (stderr, " MI(32): %08llX;", mi);
+        if (alg != 0 && mi != 0) fprintf (stderr, " MI(32): %08llX;", mi);
         if (alg == 0) fprintf (stderr, " Moto BP;");
         if (alg == 1) fprintf (stderr, " RC4;");
         if (alg == 2) fprintf (stderr, " DES;");
         if (alg == 4) fprintf (stderr, " AES128;");
         if (alg == 5) fprintf (stderr, " AES256;");
+        if (alg == 7) fprintf (stderr, " VTX STD;");
         if (R && alg != 0) fprintf (stderr, " Key: %010llX;", R);
 
         //generate 128-bit IV from 32-bit MI
         //expand 32-bit MI to 128-bit IV for AES mode data decryption
         //we only want to do this at the moment of keystream generation
-        if (alg == 5)
+        if (alg == 4 || alg == 5)
         {
+          //for the LFSR128d function to show the correct alg
+          if (state->currentslot == 0)
+            state->payload_algid += 0x20;
+          else state->payload_algidR += 0x20;
+
           fprintf (stderr, "\n");
           LFSR128d(state);
           if (state->currentslot == 0)
@@ -1049,30 +1105,54 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
           decrypted_pdu = 1;
         }
 
-        if (alg == 5 && akl == 1) //AES-256
+        else if (alg == 5 && akl == 1 && mi != 0) //AES-256 OFB
         {
           int nblocks = (state->data_byte_ctr[slot] / 16) + 1;
           aes_ofb_keystream_output (maes, kaes, ob, 2, nblocks);
           decrypted_pdu = 1;
         }
 
+        else if (alg == 5 && akl == 1 && mi == 0) //AES-256 ECB (CCR without an IV)
+        {
+          //void aes_ecb_bytewise_payload_crypt (uint8_t * input, uint8_t * key, uint8_t * output, int type, int de)
+          int nblocks = (state->data_byte_ctr[slot] / 16) + 0; //was +1
+          for (i = 0; i < nblocks; i++)
+          {
+            aes_ecb_bytewise_payload_crypt(state->dmr_pdu_sf[slot]+start, kaes, state->dmr_pdu_sf[slot]+start, 2, 0);
+            start += 16;
+          }
+          decrypted_pdu = 1;
+        }
+
         //other algs available, not sure if others will be used in any DMRA offerings
-        if (alg == 2 && R != 0) //Tait DES
+        else if (alg == 2 && R != 0) //Tait DES
         {
           int nblocks = (state->data_byte_ctr[slot] / 8) + 1;
           des_multi_keystream_output (mi, R, ob, 1, nblocks);
           decrypted_pdu = 1;
         }
 
-        if (alg == 4 && akl == 1) //AES-128
+        else if (alg == 4 && akl == 1 && mi != 0) //AES-128 OFB
         {
           int nblocks = (state->data_byte_ctr[slot] / 16) + 1;
           aes_ofb_keystream_output (maes, kaes, ob, 0, nblocks);
           decrypted_pdu = 1;
         }
 
+        else if (alg == 4 && akl == 1 && mi == 0) //AES-128 ECB (CCR without an IV)
+        {
+          //void aes_ecb_bytewise_payload_crypt (uint8_t * input, uint8_t * key, uint8_t * output, int type, int de)
+          int nblocks = (state->data_byte_ctr[slot] / 16) + 0; //was +1
+          for (i = 0; i < nblocks; i++)
+          {
+            aes_ecb_bytewise_payload_crypt(state->dmr_pdu_sf[slot]+start, kaes, state->dmr_pdu_sf[slot]+start, 0, 0);
+            start += 16;
+          }
+          decrypted_pdu = 1;
+        }
+
         //NOTE: Observed that keystream should not be applied to pad bytes or CRC
-        //apply keystream here, only if alg is 1 or 4 AND key is available!
+        //apply keystream here, only if key is available and keystream created, not ECB.
         if (alg == 1 && R != 0)
         {
           for (i = 0; i < end; i++)
@@ -1084,15 +1164,17 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
           for (i = 0; i < end; i++)
             state->dmr_pdu_sf[slot][i+start] ^= ob[i%3096];
         }
-        else if (alg == 4 && akl != 0)
+
+        else if (alg == 4 && akl != 0 && mi != 0)
         {
           for (i = 0; i < end; i++)
-            state->dmr_pdu_sf[slot][i+start] ^= ob[i%3096];
+            state->dmr_pdu_sf[slot][i+start] ^= ob[(i+16)%3096];
         }
-        else if (alg == 5 && akl != 0)
+
+        else if (alg == 5 && akl != 0 && mi != 0)
         {
           for (i = 0; i < end; i++)
-            state->dmr_pdu_sf[slot][i+start] ^= ob[i%3096];
+            state->dmr_pdu_sf[slot][i+start] ^= ob[(i+16)%3096];
         }
 
         //BP key application

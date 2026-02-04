@@ -33,7 +33,7 @@
  #endif
  
  volatile uint8_t exitflag; //fix for issue #136
- 
+
  void handler(int sgnl)
  {
    UNUSED(sgnl);
@@ -538,7 +538,6 @@
    //M17 Storage
    memset (state->m17_lsf, 0, sizeof(state->m17_lsf));
    memset (state->m17_pkt, 0, sizeof(state->m17_pkt));
-   state->m17_pbc_ct = 0;
    state->m17_str_dt = 9;
  
    state->m17_dst = 0;
@@ -552,13 +551,18 @@
    state->m17_enc = 0;
    state->m17_enc_st = 0;
    memset(state->m17_meta, 0, sizeof(state->m17_meta));
- 
-   //misc str storage
-  //  sprintf (state->str50a, "%s", "");
-   // memset (state->str50b, 0, 50*sizeof(char));
-   // memset (state->str50c, 0, 50*sizeof(char));
-   // memset (state->m17sms, 0, 800*sizeof(char));
-   // sprintf (state->m17dat, "%s", "");
+   memset(state->m17_aes_iv, 0, sizeof(state->m17_aes_iv));
+
+   memset(state->m17_text_string, 0, sizeof(state->m17_text_string));
+   memset(state->m17_gnss_string, 0, sizeof(state->m17_gnss_string));
+   memset(state->m17_data_string, 0, sizeof(state->m17_data_string));
+   memset(state->m17_meta_string, 0, sizeof(state->m17_meta_string));
+   sprintf (state->m17_text_string, "%s", "");
+   sprintf (state->m17_gnss_string, "%s", "");
+   sprintf (state->m17_data_string, "%s", "");
+   sprintf (state->m17_meta_string, "%s", "");
+
+   state->m17_viterbi_err = 0.0f;
  
    //set float temp buffer to baseline
    memset (state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
@@ -582,6 +586,9 @@
    memset (state->s_ru, 0, sizeof(state->s_ru));
    memset (state->s_l4u, 0, sizeof(state->s_l4u));
    memset (state->s_r4u, 0, sizeof(state->s_r4u));
+
+   //we do reset the counter, but not the static_ks_bits
+   memset (state->static_ks_counter, 0, sizeof(state->static_ks_counter));
  
  } //nocarrier
  
@@ -649,6 +656,7 @@
    opts->wav_out_raw = NULL;
  
    opts->dmr_stereo_wav = 0; //flag for per call dmr stereo wav recordings
+   opts->static_wav_file = 0; //single static wav file for decoding duration
    //opts->wav_out_fd = -1;
    opts->serial_baud = 115200;
    sprintf (opts->serial_dev, "/dev/ttyUSB0");
@@ -670,15 +678,10 @@
    opts->uvquality = 3;
    opts->inverted_x2tdma = 1;    // most transmitter + scanner + sound card combinations show inverted signals for this
    opts->inverted_dmr = 0;       // most transmitter + scanner + sound card combinations show non-inverted signals for this
-   opts->inverted_m17 = 0;       //samples from M17_Education seem to all be positive polarity (same from m17-tools programs)
    opts->mod_threshold = 26;
    opts->ssize = 128; //36 default, max is 128, much cleaner data decodes on Phase 2 cqpsk at max
    opts->msize = 1024; //15 default, max is 1024, much cleaner data decodes on Phase 2 cqpsk at max
    opts->playfiles = 0;
-   opts->m17encoder = 0;
-   opts->m17encoderbrt = 0;
-   opts->m17encoderpkt = 0;
-   opts->m17decoderip = 0;
    opts->delay = 0;
    opts->use_cosine_filter = 1;
    opts->unmute_encrypted_p25 = 0;
@@ -757,12 +760,6 @@
    opts->udp_sockfdA = 0;
    opts->udp_portno = 23456; //default port, same os OP25's sockaudio.py
    sprintf (opts->udp_hostname, "%s", "127.0.0.1");
- 
-   //M17 UDP Port and hostname
-   opts->m17_use_ip = 0;      //if enabled, open UDP and broadcast IP frame
-   opts->m17_portno = 17000; //default is 17000
-   opts->m17_udp_sock = 0;  //actual UDP socket for M17 to send to
-   sprintf (opts->m17_hostname, "%s", "127.0.0.1");
  
    //tcp input options
    opts->tcp_sockfd = 0;
@@ -1037,7 +1034,7 @@
    state->K2 = 0;
    state->K3 = 0;
    state->K4 = 0;
-   state->M = 0; //force key priority over settings from fid/so
+   state->forced_alg_id = 0; //force key priority over settings from fid/so
  
    state->dmr_stereo = 0; //1, or 0?
    state->dmrburstL = 17; //initialize at higher value than possible
@@ -1056,6 +1053,18 @@
    state->DMRvcR = 0;
    state->dropL = 256;
    state->dropR = 256;
+
+   state->tyt_ap = 0;
+   state->tyt_bp = 0;
+   state->tyt_ep = 0;
+   state->retevis_ap = 0;
+   state->baofeng_ap = 0;
+   state->csi_ee = 0;
+
+   state->ken_sc = 0;
+   state->any_bp = 0;
+   state->straight_ks = 0;
+   state->straight_mod = 0;
  
    //ks array storage and counters
    memset (state->ks_octetL, 0, sizeof(state->ks_octetL));
@@ -1065,6 +1074,9 @@
    state->octet_counter = 0;
    state->bit_counterL = 0;
    state->bit_counterR = 0;
+
+   memset (state->static_ks_bits, 0, sizeof(state->static_ks_bits));
+   memset (state->static_ks_counter, 0, sizeof(state->static_ks_counter));
  
    //AES Specific Variables
    memset (state->aes_key, 0, sizeof(state->aes_key));
@@ -1197,6 +1209,7 @@
    memset (state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
    state->nxdn_alias_block_number = 0;
    memset (state->nxdn_alias_block_segment, 0, sizeof(state->nxdn_alias_block_segment));
+   state->nxdn_pn95_seed = 228; //default value
  
    //site/srv/cch info
    state->nxdn_location_site_code = 0;
@@ -1295,22 +1308,16 @@
    //M17 Storage
    memset (state->m17_lsf, 0, sizeof(state->m17_lsf));
    memset (state->m17_pkt, 0, sizeof(state->m17_pkt));
-   state->m17_pbc_ct = 0;
    state->m17_str_dt = 9;
  
    //misc str storage
   //  sprintf (state->str50a, "%s", "");
    memset (state->str50b, 0, 50*sizeof(char));
    memset (state->str50c, 0, 50*sizeof(char));
-   memset (state->m17sms, 0, 800*sizeof(char));
-   sprintf (state->m17dat, "%s", "");
  
    state->m17_dst = 0;
    state->m17_src = 0;
    state->m17_can = 0;     //can value that was decoded from signal
-   state->m17_can_en = -1; //can value supplied to the encoding side
-   state->m17_rate = 48000; //sampling rate for audio input
-   state->m17_vox = 0; //vox mode enabled on M17 encoder
    memset(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
    memset(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
    sprintf (state->m17_dst_str, "%s", "");
@@ -1318,10 +1325,19 @@
  
    state->m17_enc = 0;
    state->m17_enc_st = 0;
-   state->m17encoder_tx = 0;
-   state->m17encoder_eot = 0;
    memset(state->m17_meta, 0, sizeof(state->m17_meta));
- 
+   memset(state->m17_aes_iv, 0, sizeof(state->m17_aes_iv));
+
+   memset(state->m17_text_string, 0, sizeof(state->m17_text_string));
+   memset(state->m17_gnss_string, 0, sizeof(state->m17_gnss_string));
+   memset(state->m17_data_string, 0, sizeof(state->m17_data_string));
+   memset(state->m17_meta_string, 0, sizeof(state->m17_meta_string));
+   sprintf (state->m17_text_string, "%s", "");
+   sprintf (state->m17_gnss_string, "%s", "");
+   sprintf (state->m17_data_string, "%s", "");
+   sprintf (state->m17_meta_string, "%s", "");
+
+   state->m17_viterbi_err = 0.0f;
  
    #ifdef USE_CODEC2
    state->codec2_3200 = codec2_create(CODEC2_MODE_3200);
@@ -1379,8 +1395,6 @@
    printf ("                rtl:dev:freq:gain:ppm:bw:sq:vol for rtl dongle (see below)\n");
    printf ("                tcp for tcp client SDR++/GNURadio Companion/Other (Port 7355)\n");
    printf ("                tcp:192.168.7.5:7355 for custom address and port \n");
-   printf ("                m17udp for M17 UDP/IP socket bind input (default host 127.0.0.1; default port 17000)\n");
-   printf ("                m17udp:192.168.7.8:17001 for M17 UDP/IP bind input (Binding Address and Port\n");
    printf ("                filename.bin for OP25/FME capture bin files\n");
    printf ("                filename.wav for 48K/1 wav files (SDR++, GQRX)\n");
    printf ("                filename.wav -s 96000 for 96K/1 wav files (DSDPlus)\n");
@@ -1403,32 +1417,29 @@
    printf ("                null for no audio output\n");
    printf ("                udp for UDP socket blaster output (default host 127.0.0.1; default port 23456)\n");
    printf ("                udp:192.168.7.8:23470 for UDP socket blaster output (Target Address and Port\n");
-   printf ("                m17udp for M17 UDP/IP socket blaster output (default host 127.0.0.1; default port 17000)\n");
-   printf ("                m17udp:192.168.7.8:17001 for M17 UDP/IP blaster output (Target Address and Port\n");
    printf ("  -d <dir>      Create mbe data files, use this directory (TDMA version is experimental)\n");
    printf ("  -r <files>    Read/Play saved mbe data from file(s)\n");
    printf ("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
    printf ("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
    printf ("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto; 0-100%%  )\n");
-   //printf ("  -w <file>     Output synthesized speech to a .wav file, FDMA modes only.\n"); //disabled
    printf ("  -6 <file>     Output raw audio .wav file (48K/1). (WARNING! Large File Sizes 1 Hour ~= 360 MB)\n");
    printf ("  -7 <dir>      Create/Use Custom directory for Per Call decoded .wav file saving.\n");
    printf ("                 (Use ./folder for Nested Directory!)\n");
    printf ("                 (Use /path/to/folder for hard coded directory!)\n");
    printf ("                 (Use Before the -P option!)\n");
-   printf ("  -8            Enable Experimental Source Audio Monitor (Pulse Audio Output Only!)\n");
-   printf ("                 (Its recommended to use Squelch in SDR++ or GQRX, etc, if monitoring mixed analog/digital)\n");
-   printf ("  -P            Enable Per Call WAV file saving in AUTO and NXDN decoding classes\n");
-   printf ("                 (Per Call can only be used in Ncurses Terminal!)\n");
-   printf ("                 (Running in console will use static wav files)\n");
-   printf ("  -a            Enable Call Alert Beep (NCurses Terminal Only)\n");
+   printf ("  -8            Enable Source Audio Monitor\n");
+   printf ("                 (Set Squelch in RTL, SDR++ or GQRX, etc, if monitoring mixed analog/digital)\n");
+   printf ("  -w <file>     Output synthesized speech to a single static .wav file. (Do not use with -P Per Call Switch)\n");
+   printf ("  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
+   printf ("                 (Per Call works with everything now and doesn't require ncurses terminal!)\n");
+   printf ("  -a            Enable Call Alert Beep\n");
    printf ("                 (Warning! Might be annoying.)\n");
    printf ("  -J <file>     Specify Filename for Event Log Output.\n");
    printf ("  -L <file>     Specify Filename for LRRP Data Output.\n");
    printf ("  -Q <file>     Specify Filename for OK-DMRlib Structured File Output. (placed in DSP folder)\n");
    printf ("  -Q <file>     Specify Filename for M17 Float Stream Output. (placed in DSP folder)\n");
    printf ("  -c <file>     Output symbol capture to .bin file\n");
-   printf ("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n");
+   printf ("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n"); //does this still work correctly?
    printf ("  -V <num>      Enable TDMA Voice Synthesis on Slot 1 (1), Slot 2 (2), or Both (3); Default is 3; \n");
    #ifdef __CYGWIN__
    printf ("                If using /dev/dsp input and output at 48k1, launch two instances of DSD-FME w -V 1 and -V 2 if needed\n");
@@ -1452,28 +1463,6 @@
    printf (" Example: dsd-fme -fs -i rtl -C cap_plus_channel.csv -T\n");
    printf (" Example: dsd-fme -fp -i rtl:0:851.375M:22:-2:24:0:2\n");
    printf ("\n");
-   printf ("Encoder options:\n");
-   printf ("  -fZ           M17 Stream Voice Encoder\n");
-   printf (" Example: dsd-fme -fZ -M M17:9:DSD-FME:LWVMOBILE -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
-   printf ("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 wav file\n");
-   printf ("\n");
-   printf (" Example: dsd-fme -fZ -M M17:9:DSD-FME:LWVMOBILE -i tcp -o pulse -8 -N 2> m17encoderlog.txt\n");
-   printf ("   Run M17 Encoding, listening to default tcp input, without internal decode/playback and output to 48k/1 analog output device\n");
-   printf ("\n");
-   printf ("  -fP           M17 Packet Encoder\n");
-   printf (" Example: dsd-fme -fP -M M17:9:DSD-FME:LWVMOBILE -6 m17pkt.wav -8 -S 'Hello World'\n");
-   printf ("\n");
-   printf ("  -fB           M17 BERT Encoder\n");
-   printf (" Example: dsd-fme -fB -M M17:9:DSD-FME:LWVMOBILE -6 m17bert.wav -8\n");
-   printf ("\n");
-   printf ("  -M            M17 Encoding User Configuration String: M17:CAN:SRC:DST:INPUT_RATE:VOX (see examples above).\n");
-   printf ("                  CAN 1-15; SRC and DST have to be no more than 9 UPPER base40 characters.\n");
-   printf ("                  BASE40: '  ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/.'\n");
-   printf ("                  Input Rate Default is 48000; Use Multiples of 8000 up to 48000.\n");
-   printf ("                  VOX Enabled on 1; (Default = 0)\n");
-   printf ("                  Values not entered into the M17: string are set to default values.\n");
-   printf ("  -S            M17 Packet Encoder SMS String: No more than 772 chars, use single quotations (see example above).\n");
-   printf ("  -S            M17 Stream Encoder SMS String: No more than  48 chars, activates 1600 voice  (best if broken into six 8 char chunks).\n");
    printf ("Decoder options:\n");
    printf ("  -fa           Auto Detection\n");
    printf ("  -fA           Passive Analog Audio Monitor\n");
@@ -1485,7 +1474,6 @@
    printf ("  -fx           Decode only X2-TDMA\n");
    printf ("  -fy           Decode only YSF\n");
    printf ("  -fz             Decode only M17*\n");
-   printf ("  -fU             Decode only M17 UDP/IP Frame***\n");
    printf ("  -fi             Decode only NXDN48* (6.25 kHz) / IDAS*\n");
    printf ("  -fn             Decode only NXDN96* (12.5 kHz)\n");
    printf ("  -fp             Decode only ProVoice*\n");
@@ -1501,24 +1489,19 @@
    printf ("  -xx           Expect non-inverted X2-TDMA signal\n");
    printf ("  -xr           Expect inverted DMR signal\n");
    printf ("  -xd           Expect inverted ICOM dPMR signal\n");
-   printf ("  -xz           Expect inverted M17 signal\n");
    printf ("\n");
    printf ("  * denotes frame types that cannot be auto-detected.\n");
    printf ("  ** Phase 2 Single Frequency may require user to manually set WACN/SYSID/CC parameters if MAC_SIGNAL not present.\n");
-   printf ("  *** configure UDP Input with -i m17:127.0.0.1:17000 \n");
    printf ("\n");
    printf ("Advanced Decoder options:\n");
    printf ("  -X <hex>      Manually Set P2 Parameters (WACN, SYSID, CC/NAC)\n");
    printf ("                 (-X BEE00ABC123)\n");
+   printf ("  -_ <dec>      Manually Set NXDN PN95 Dibit Scrambler Seed (1-511)\n");
+   printf ("                 (-* 261)\n");
    printf ("  -D <dec>      Manually Set TIII DMR Location Area n bit len (0-10)(10 max)\n");
    printf ("                 (Value defaults to max n bit value for site model size)\n");
    printf ("                 (Setting 0 will show full Site ID, no area/subarea)\n");
    printf ("\n");
-   // printf ("  -A <num>      QPSK modulation auto detection threshold (default=26)\n");
-   // printf ("  -S <num>      Symbol buffer size for QPSK decision point tracking\n");
-   // printf ("                 (default=36)\n");
-   // printf ("  -M <num>      Min/Max buffer size for QPSK decision point tracking\n");
-   // printf ("                 (default=15)\n");
    printf ("  -ma           Auto-select modulation optimizations\n");
    printf ("  -mc           Use only C4FM modulation optimizations (default)\n");
    printf ("  -mg           Use only GFSK modulation optimizations\n");
@@ -1529,18 +1512,17 @@
    printf ("                 Use this feature to allow MAC_SIGNAL even if CRC errors.\n");
    printf ("  -F            Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");
    printf ("                 Enabling on some systems could lead to bad channel assignments/site data decoding if bad or marginal signal\n");
-   printf ("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
    printf ("\n");
    printf ("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
-   printf ("                 (NOTE: This used to be the 'K' option! \n");
+   printf ("                 (NOTE: This used to be the 'K' option!) \n");
    printf ("\n");
    printf ("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");
    printf ("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
    printf ("                 -H 0B57935150 \n");
    printf ("                 -H '736B9A9C5645288B 243AD5CB8701EF8A' \n");
    printf ("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8' \n");
-   printf ("\n");           //may move to using the rkey_array with an offset for additional key values
-   printf ("  -H <hex>      Manually Enter AES-128 or AES-256 Hex Key (see example below)\n");
+   printf ("\n");
+   printf ("  -H <hex>      Manually Enter AES-128, AES-256, or Kirisun-256 Hex Key (see example below)\n");
    printf ("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
    printf ("                 -H '736B9A9C5645288B 243AD5CB8701EF8A' \n");
    printf ("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8' \n");
@@ -1549,9 +1531,43 @@
    printf ("                 \n");
    printf ("  -1 <hex>      Manually Enter RC4 or DES Key Value (DMR, P25, NXDN) (Hex Value) \n");
    printf ("                 \n");
-   printf ("  -2 <hex>      Manually Enter TYT and Enforce 16-bit BP Key Value (DMR) (Hex Value) \n");
+   printf ("  -2 <hex>      Manually Enter and Enforce TYT 16-bit BP Key Value (DMR) (Hex Value) \n");
    printf ("                 \n");
-   printf ("  -5 <hex>      Manually Enter 48-bit BP Key Value (DMR) (Hex Value) \n");
+   printf ("  -! <hex>      Manually Enter and Enforce TYT Advanced Privacy (PC4) 128 or 256 bit AP Hex Key (see example below)\n");
+   printf ("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
+   printf ("                 -! '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+   printf ("                 -! '1111111111111111 1111111111111111 1111111111111111 1111111111111111' \n");
+   printf ("                 \n");
+   printf ("  -@ <hex>      Manually Enter and Enforce Retevis Advanced Privacy (RC2) 128 or 256 bit AP Hex Key (see example below)\n");
+   printf ("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
+   printf ("                 -@ '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+   printf ("                 -@ '1122334455667788 99AABBCCDDEEFF11 1122334455667788 99AABBCCDDEEFF11' \n");
+   printf ("                 \n");
+   printf ("  -5 <hex>      Manually Enter and Enforce TYT Enhanced Privacy (AES-128) EP Hex Key (see example below)\n");
+   printf ("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
+   printf ("                 -5 '736B9A9C5645288B 243AD5CB8701EF8A' \n");
+   printf ("                 \n");
+   printf ("  -+ <hex>      Manually Enter and Enforce Baofeng Advanced Privacy (PC5-128 or PC5-256) AP Hex Key (see example below)\n");
+   printf ("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
+   printf ("                 -+ 'ABCDABCDABCDABCD ABDCDABCDABCDABC' \n");
+   printf ("                 -+ 'ABCDABCDABCDABCD ABDCDABCDABCDABC EF01EF01EF01EF01 EF01EF01EF01EF01' \n");
+   printf ("                 \n");
+   printf ("  -^ <hex>      Manually Enter and Enforce Connect Systems 72-bit (9-byte) Extended Encryption Hex Key (see example below)\n");
+   printf ("                 -^  3BBE782C0430008271\n");
+   printf ("                 \n");
+   printf ("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value) \n");
+   printf ("                 \n");
+   printf ("  -A <hex>      Manually Enter and Enforce Anytone 16-bit BP Key Value (DMR) (Hex Value) \n");
+   printf ("                 \n");
+   printf ("  -S <str>      Manually Enter and Enforce Generic Static Keystream -> Length and BYTE PACKED / ALIGNED String for AMBE (up to 882 bits)\n");
+   printf ("                  For Example, enter 16-bit Keystream 0909 as:\n");
+   printf ("                    -S 16:0909\n");
+   printf ("                  For Example, enter 49-bit Keystream as:\n");
+   printf ("                    -S 49:123456789ABC80\n");
+   printf ("                  For Example, enter 49-bit Keystream (MBP 70) as:\n");
+   printf ("                    -S 49:ED0AED4AED4AED4A\n");
+   printf ("                  For Example, Baofeng 49-bit Keystream for 56-bit Custom Encryption as:\n");
+   printf ("                    -S 49:11AA22BB33CC44\n");
    printf ("                 \n");
    printf ("  -k <file>     Import Key List from csv file (Decimal Format) -- Lower Case 'k'.\n");
    printf ("                  Only supports NXDN, DMR Basic Privacy (decimal value). \n");
@@ -1563,6 +1579,8 @@
    printf ("  -4            Force Privacy Key over Encryption Identifiers (DMR MBP/HBP and NXDN Scrambler) \n");
    printf ("                 \n");
    printf ("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR) \n");
+   printf ("                 \n");
+   printf ("  -M <hex>      Force Entered Alg ID Value over Missing PI header/LE Encryption Identifiers (DMR) \n");
    printf ("                 \n");
    printf ("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst) \n");
    printf ("                  Note: Disable this if false positives on Voice ENC occur. \n");
@@ -1746,10 +1764,27 @@
     watchdog_event_history(opts, state, 1);
     watchdog_event_current(opts, state, 1);
 
-  if (opts->wav_out_f != NULL)
-    opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
-  if (opts->wav_out_fR != NULL)
-  opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir, &state->event_history_s[1]);
+  if (opts->static_wav_file == 0)
+  {
+    if (opts->wav_out_f != NULL)
+      opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+
+    if (opts->wav_out_fR != NULL)
+      opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir, &state->event_history_s[1]);
+  }
+
+  else if (opts->static_wav_file == 1)
+  {
+
+    if (opts->wav_out_f != NULL)
+      opts->wav_out_f = close_wav_file(opts->wav_out_f);
+
+    //this one needed?
+    if (opts->wav_out_fR != NULL)
+      opts->wav_out_fR = close_wav_file(opts->wav_out_fR);
+    
+  }
+
   if (opts->wav_out_raw != NULL)
     opts->wav_out_raw = close_wav_file(opts->wav_out_raw);
 
@@ -1773,9 +1808,6 @@
  
    if (opts->udp_sockfdA)
      close (opts->udp_sockfdA);
- 
-   if (opts->m17_udp_sock)
-     close (opts->m17_udp_sock);
  
    //close MBE out files
    if (opts->mbe_out_f != NULL) closeMbeOutFile (opts, state);
@@ -1854,7 +1886,7 @@
  
    exitflag = 0;
  
-   while ((c = getopt (argc, argv, "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF01:2:345:6:7:89Ek:I:J:O")) != -1)
+   while ((c = getopt (argc, argv, "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:G:D:L:V:U:YK:b:H:X:M:NQ:WrlZTF@:!:01:2:345:6:^:7:8_:9:Ek:I:J:O+:")) != -1)
      {
  
        switch (c)
@@ -1868,8 +1900,9 @@
            opts.call_alert = 1;
            break;
  
-         //Free'd up switches include: j, O,
-         //
+         //Free'd up switches include: j, M,
+         //NOTE: Don't use -*, found it exhibits unusual behavior, was setting
+         //itself to -3 for some reason, may be reading contents of directory
  
          //make sure to put a colon : after each if they need an argument
          //or remove colon if no argument required
@@ -1889,30 +1922,10 @@
            exit(0);
            break;
  
-         //Specify M17 encoder User Data (CAN, DST, SRC values)
-         //NOTE: Disabled QPSK settings by borrowing these switches (nobody probalby used them anyways)
-         case 'M':
-           strncpy(state.m17dat, optarg, 49);
-           state.m17dat[49] = '\0';
-           break;
- 
-         //Specify M17 encoder SMS Message (truncates at 772)
-         case 'S':
-           strncpy(state.m17sms, optarg, 772);
-           state.m17sms[772] = '\0';
-           state.m17_str_dt = 3; //flip this so that STR encoder knows to use 1600 voice + data
-           break;
- 
          //specify TG Hold value
          case 'I':
            sscanf (optarg, "%d", &state.tg_hold);
            fprintf (stderr, "TG Hold set to %d \n", state.tg_hold);
-           break;
- 
-         case '9': //Leaving Enabled to maintain backwards compatability
-           state.ea_mode = 0;
-           state.esk_mask = 0;
-           fprintf (stderr,"Force Enabling EDACS Standard/Networked Mode Mode without ESK.\n");
            break;
  
          //experimental audio monitoring
@@ -1923,9 +1936,14 @@
  
          //rc4 enforcement on DMR (due to missing the PI header)
          case '0':
-           state.M = 0x21;
+           state.forced_alg_id = 0x21;
            fprintf (stderr,"Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");
            break;
+
+         case 'M':
+          sscanf (optarg, "%hhX", &state.forced_alg_id);
+          fprintf (stderr,"Force DMR ALG ID 0x%02X over Missing PI header/LE Encryption Identifiers (DMR)\n", state.forced_alg_id);
+          break;
  
          //load single rc4/des key
          case '1':
@@ -1938,23 +1956,57 @@
  
          //get user TYT BP Key and Force Its application
          case '2':
-           state.M = 0x16; //16-bit TYT 'BP' Keys
+           state.tyt_bp = 1;
            sscanf (optarg, "%llX", &state.H);
            state.H = state.H & 0xFFFF; //truncate to 16-bits
-           fprintf (stderr,"DMR TYT 16-bit Key %llX with Forced Application\n", state.H);
+           fprintf (stderr,"DMR TYT Basic 16-bit Key 0x%llX with Forced Application\n", state.H);
+           break;
+
+         //get user TYT AP Key and Force Its application
+         case '!':
+           tyt_ap_pc4_keystream_creation(&state, optarg);
+           break;
+           
+         //get user Retevis AP Key and Force Its application
+         case '@':
+           retevis_rc2_keystream_creation(&state, optarg);
            break;
  
-         //Enter and Force Applicaiton of a a 48-bit AMBE Keystream (hex) for 'CCR' radios and weird 'BP'
+         //get user TYT EP Key and Force Its application
          case '5':
-           state.M = 0x48; //48-bit AMBE Keystream for any generic keystream application
-           sscanf (optarg, "%llX", &state.H);
-           state.H = state.H & 0xFFFFFFFFFFFF; //truncate to 48-bits
-           fprintf (stderr,"AMBE+2 48-bit Key %llX with Forced Application\n", state.H);
+           tyt_ep_aes_keystream_creation(&state, optarg);
+           break;
+
+         //get user CSI EE Key and Force Its application
+         case '^':
+           parse_raw_user_string(optarg, state.static_ks_bits[0]);
+           fprintf (stderr,"DMR CS Extended 72-bit Key with Forced Application\n");
+           state.csi_ee = 1;
+           break;
+
+         //get user Kenwood DMR Scrambler Key and Force Its application
+         case '9':
+           ken_dmr_scrambler_keystream_creation(&state, optarg);
+           break;
+
+         //get user Anytone BP Key and Force Its application
+         case 'A':
+           anytone_bp_keystream_creation(&state, optarg);
+           break;
+
+          //get user Baofeng AP Key and Force Its application
+         case '+':
+           baofeng_ap_pc5_keystream_creation(&state, optarg);
+           break;
+
+         //Straight KS Generation
+         case 'S':
+           straight_mod_xor_keystream_creation(&state, optarg);
            break;
  
          case '3':
            opts.dmr_le = 0;
-           fprintf (stderr,"DMR Late Entry Encryption Identifiers Disabled (VC6 Single Burst)\n");
+           fprintf (stderr,"DMRA Late Entry Encryption Identifiers Disabled\n");
            break;
  
          case 'y': //use experimental 'float' audio output
@@ -2149,7 +2201,15 @@
            if (state.R > 0x7FFF) state.R = 0x7FFF;
            //disable keyloader in case user tries to use this and it at the same time
            state.keyloader = 0;
+           fprintf (stderr, "NXDN Scrambler Key set to: %05lld; \n", state.R);
            break;
+
+         case '_': //was *
+          sscanf (optarg, "%hu", &state.nxdn_pn95_seed);
+          if (state.nxdn_pn95_seed > 0x1FF) state.nxdn_pn95_seed = 0x1FF;
+          else if (state.nxdn_pn95_seed == 0) state.nxdn_pn95_seed = 228;
+          fprintf (stderr, "NXDN PN95 Seed Value set to: %03d; \n", state.nxdn_pn95_seed);
+          break;
  
          case 'H':
            //new handling for 10/32/64 Char Key
@@ -2181,7 +2241,7 @@
            break;
  
          case '4':
-           state.M = 1;
+           state.forced_alg_id = 1;
            fprintf (stderr,"Force Privacy Key over Encryption Identifiers (DMR BP and NXDN Scrambler) \n");
            break;
  
@@ -2314,13 +2374,14 @@
            }
            break;
  
-        //  case 'w': //disabled
-        //    strncpy(opts.wav_out_file, optarg, 1023);
-        //    opts.wav_out_file[1023] = '\0';
-        //    fprintf (stderr,"Writing + Appending decoded audio to file %s\n", opts.wav_out_file);
-        //    opts.dmr_stereo_wav = 0;
-        //    openWavOutFile (&opts, &state);
-        //    break;
+         case 'w': //experimental re-enabling (needs thorough testing)
+           strncpy(opts.wav_out_file, optarg, 1023);
+           opts.wav_out_file[1023] = '\0';
+           fprintf (stderr,"Writing + Appending decoded audio to file %s\n", opts.wav_out_file);
+           opts.dmr_stereo_wav = 0;
+           opts.static_wav_file = 1;
+           openWavOutFileLR (&opts, &state);
+           break;
  
          case '6':
            strncpy(opts.wav_out_file_raw, optarg, 1023);
@@ -2917,40 +2978,6 @@
              //disable RRC filter for now
              opts.use_cosine_filter = 0;
            }
-           else if (optarg[0] == 'Z') //Captial Z to Run the M17 STR encoder
-           {
-             opts.m17encoder = 1;
-             opts.pulse_digi_rate_out = 48000;
-             opts.pulse_digi_out_channels = 1;
-             //filters disabled by default, use ncurses VBN switches
-             opts.use_lpf = 0;
-             opts.use_hpf = 0;
-             opts.use_pbf = 0;
-             opts.dmr_stereo = 0;
-             sprintf (opts.output_name, "M17 Encoder");
-           }
-           else if (optarg[0] == 'B') //Captial B to Run the M17 BRT encoder
-           {
-             opts.m17encoderbrt = 1;
-             opts.pulse_digi_rate_out = 48000;
-             opts.pulse_digi_out_channels = 1;
-             sprintf (opts.output_name, "M17 BERT");
-           }
-           else if (optarg[0] == 'P') //Captial P to Run the M17 PKT encoder
-           {
-             opts.m17encoderpkt = 1;
-             opts.pulse_digi_rate_out = 48000;
-             opts.pulse_digi_out_channels = 1;
-             sprintf (opts.output_name, "M17 Packet");
-           }
-           else if (optarg[0] == 'U') //Captial U to Run the M17 UDP IPF decoder
-           {
-             opts.m17decoderip = 1;
-             opts.pulse_digi_rate_out = 8000;
-             opts.pulse_digi_out_channels = 1;
-             sprintf (opts.output_name, "M17 IP Frame");
-             fprintf (stderr, "Decoding M17 UDP/IP Frames.\n");
-           }
            break;
          //don't mess with the modulations unless you really need to
          case 'm':
@@ -3050,42 +3077,7 @@
              opts.inverted_dpmr = 1;
              fprintf (stderr, "Expecting inverted ICOM dPMR signals.\n");
            }
-           else if (optarg[0] == 'z')
-           {
-             opts.inverted_m17 = 1;
-             fprintf (stderr, "Expecting inverted M17 signals.\n");
-           }
            break;
-         case 'A':
-           sscanf (optarg, "%i", &opts.mod_threshold);
-           fprintf (stderr,"Setting C4FM/QPSK auto detection threshold to %i\n", opts.mod_threshold);
-           break; //this was missing a break
- 
-         //Disabled and switches reassigned to M17 User Data Argumeents
-         // case 'S': //disabled, using for M17 encoder user SMS message
-         //   sscanf (optarg, "%i", &opts.ssize);
-         //   if (opts.ssize > 128)
-         //     {
-         //       opts.ssize = 128;
-         //     }
-         //   else if (opts.ssize < 1)
-         //     {
-         //       opts.ssize = 1;
-         //     }
-         //   fprintf (stderr,"Setting QPSK symbol buffer to %i\n", opts.ssize);
-         //   break;
-         // case 'M': //disabled, using for M17 user data
-         //   sscanf (optarg, "%i", &opts.msize);
-         //   if (opts.msize > 1024)
-         //     {
-         //       opts.msize = 1024;
-         //     }
-         //   else if (opts.msize < 1)
-         //     {
-         //       opts.msize = 1;
-         //     }
-         //   fprintf (stderr,"Setting QPSK Min/Max buffer to %i\n", opts.msize);
-         //   break;
  
          case 'r':
            opts.playfiles = 1;
@@ -3110,48 +3102,6 @@
      if (opts.resume > 0)
      {
        openSerial (&opts, &state);
-     }
- 
-     if((strncmp(opts.audio_in_dev, "m17udp", 6) == 0)) //M17 UDP Socket Input
-     {
-       fprintf (stderr, "M17 UDP IP Frame Input: ");
-       char * curr;
- 
-       curr = strtok(opts.audio_in_dev, ":"); //should be 'm17'
-       if (curr != NULL) ; //continue
-       else goto M17ENDIN; //end early with preset values
- 
-       curr = strtok(NULL, ":"); //host address
-       if (curr != NULL) strncpy (opts.m17_hostname, curr, 1023);
- 
-       curr = strtok(NULL, ":"); //host port
-       if (curr != NULL) opts.m17_portno = atoi (curr);
- 
-       M17ENDIN:
-       fprintf (stderr, "%s:", opts.m17_hostname);
-       fprintf (stderr, "%d \n", opts.m17_portno);
-     }
- 
-     if((strncmp(opts.audio_out_dev, "m17udp", 6) == 0)) //M17 UDP Socket Output
-     {
-       fprintf (stderr, "M17 UDP IP Frame Output: ");
-       char * curr;
- 
-       curr = strtok(opts.audio_out_dev, ":"); //should be 'm17'
-       if (curr != NULL) ; //continue
-       else goto M17ENDOUT; //end early with preset values
- 
-       curr = strtok(NULL, ":"); //host address
-       if (curr != NULL) strncpy (opts.m17_hostname, curr, 1023);
- 
-       curr = strtok(NULL, ":"); //host port
-       if (curr != NULL) opts.m17_portno = atoi (curr);
- 
-       M17ENDOUT:
-       fprintf (stderr, "%s:", opts.m17_hostname);
-       fprintf (stderr, "%d \n", opts.m17_portno);
-       opts.m17_use_ip = 1; //tell the encoder to open the socket
-       opts.audio_out_type = 9; //set to null device
      }
  
      if((strncmp(opts.audio_in_dev, "tcp", 3) == 0)) //tcp socket input from SDR++ and others
@@ -3442,18 +3392,23 @@
      //to a variable config, it cannot be the input as well
  
  
+     #ifndef __APPLE__
      if((strncmp(opts.audio_in_dev, "/dev/audio", 10) == 0))
      {
        sprintf (opts.audio_in_dev, "%s", "/dev/dsp");
        fprintf (stderr, "Switching to /dev/dsp.\n");
      }
- 
+     #endif
+
+     #ifndef __APPLE__ 
      if((strncmp(opts.audio_in_dev, "pa", 2) == 0))
      {
        sprintf (opts.audio_in_dev, "%s", "/dev/dsp");
        fprintf (stderr, "Switching to /dev/dsp.\n");
      }
- 
+     #endif
+
+     #ifndef __APPLE__
      speed = 48000; //hardset to 48000
      if((strncmp(opts.audio_in_dev, "/dev/dsp", 8) == 0))
      {
@@ -3487,24 +3442,31 @@
  
        opts.audio_in_type = 5; //5 will become OSS input type
      }
+     #endif
  
      //check for OSS output
+     #ifndef __APPLE__
      if((strncmp(opts.audio_out_dev, "/dev/audio", 10) == 0))
      {
        sprintf (opts.audio_out_dev, "%s", "/dev/dsp");
        fprintf (stderr, "Switching to /dev/dsp.\n");
      }
+     #endif
  
+     #ifndef __APPLE__
      if((strncmp(opts.audio_out_dev, "pa", 2) == 0))
      {
        sprintf (opts.audio_out_dev, "%s", "/dev/dsp");
        fprintf (stderr, "Switching to /dev/dsp.\n");
      }
+     #endif
  
      //this will only open OSS output if its listed as a type
      //changed to this so I could call it freely inside of ncurses terminal
+     #ifndef __APPLE__
      if (opts.playfiles == 0)
       openOSSOutput(&opts);
+     #endif
  
      if (opts.playfiles == 1)
      {
@@ -3516,8 +3478,10 @@
        opts.pulse_digi_out_channels = 1;
        if (opts.audio_out_type == 0)
         openPulseOutput(&opts);
+       #ifndef __APPLE__
        else if((strncmp(opts.audio_out_dev, "/dev/dsp", 8) == 0))
         openOSSOutput(&opts); //open after split == 1 so it will open and playback at the proper speed
+       #endif
      }
  
      //this particular if-elseif-else could be rewritten to be a lot neater and simpler
@@ -3551,132 +3515,10 @@
      signal(SIGINT, handler);
      signal(SIGTERM, handler);
  
-     //read in any user supplied M17 CAN and/or CSD data
-     if((strncmp(state.m17dat, "M17", 3) == 0))
-     {
-       //read in values
-       //string in format of M17:can:src_csd:dst_csd:input_rate
- 
-       //check and capatalize any letters in the CSD
-       for (int i = 0; state.m17dat[i]!='\0'; i++)
-       {
-         if(state.m17dat[i] >= 'a' && state.m17dat[i] <= 'z')
-           state.m17dat[i] = state.m17dat[i] -32;
-       }
- 
-       fprintf (stderr, "M17 User Data: ");
-       char * curr;
- 
-       // if((strncmp(state.m17dat, "M17", 3) == 0))
-       // goto M17END;
- 
-       curr = strtok(state.m17dat, ":"); //should be 'M17'
-       if (curr != NULL) ; //continue
-       else goto M17END; //end early with preset values
- 
-       curr = strtok(NULL, ":"); //m17 channel access number
-       if (curr != NULL)
-         state.m17_can_en = atoi(curr);
- 
-       curr = strtok(NULL, ":"); //m17 src address
-       if (curr != NULL)
-       {
-         strncpy (state.str50c, curr, 9); //only read first 9
-         state.str50c[9] = '\0';
-       }
- 
-       curr = strtok(NULL, ":"); //m17 dst address
-       if (curr != NULL)
-       {
-         strncpy (state.str50b, curr, 9); //only read first 9
-         state.str50b[9] = '\0';
-       }
- 
-       curr = strtok(NULL, ":"); //m17 input audio rate
-       if (curr != NULL)
-         state.m17_rate = atoi(curr);
- 
-       curr = strtok(NULL, ":"); //m17 vox enable
-       if (curr != NULL)
-         state.m17_vox = atoi(curr);
- 
-       // curr = strtok(NULL, ":"); //moved to in and out methods
-       // if (curr != NULL)
-       //   opts.m17_use_ip = atoi(curr);
- 
-       M17END: ; //do nothing
- 
-       //check to make sure can value is no greater than 15 (4 bit value)
-       if (state.m17_can_en > 15)
-         state.m17_can_en = 15;
- 
-       //if vox is greater than 1, assume user meant 'yes' and set to one
-       if (state.m17_vox > 1)
-         state.m17_vox = 1;
- 
-       //debug print m17dat string
-       // fprintf (stderr, " %s;", state.m17dat);
- 
-       fprintf (stderr, " M17:%d:%s:%s:%d;", state.m17_can_en, state.str50c, state.str50b, state.m17_rate);
-       if (state.m17_vox == 1) fprintf (stderr, "VOX;");
-       fprintf (stderr, "\n");
-     }
- 
      if (opts.playfiles == 1)
      {
  
        playMbeFiles (&opts, &state, argc, argv);
-     }
- 
-     else if (opts.m17encoder == 1)
-     {
-       //disable RRC filter for now
-       opts.use_cosine_filter = 0;
- 
-       opts.pulse_digi_rate_out = 8000;
- 
-       //open any inputs, if not alread opened, OSS input and output already handled
-       if (opts.audio_in_type == 0) openPulseInput(&opts);
- 
-       #ifdef USE_RTLSDR
-       else if(opts.audio_in_type == 3)
-       {
-         open_rtlsdr_stream(&opts);
-         opts.rtl_started = 1;
-       }
-       #endif
- 
-       //open any outputs, if not already opened
-       if (opts.audio_out_type == 0) openPulseOutput(&opts);
-       //All input and output now opened and handled correctly, so let's not break things by tweaking
-       encodeM17STR(&opts, &state);
-     }
- 
-     else if (opts.m17encoderbrt == 1)
-     {
-       opts.pulse_digi_rate_out = 8000;
-       //open any outputs, if not already opened
-       if (opts.audio_out_type == 0) openPulseOutput(&opts);
-       encodeM17BRT(&opts, &state);
-     }
- 
-     else if (opts.m17encoderpkt == 1)
-     {
-       //disable RRC filter for now
-       opts.use_cosine_filter = 0;
- 
-       opts.pulse_digi_rate_out = 8000;
-       //open any outputs, if not already opened
-       if (opts.audio_out_type == 0) openPulseOutput(&opts);
-       encodeM17PKT(&opts, &state);
-     }
- 
-     else if (opts.m17decoderip == 1)
-     {
-       opts.pulse_digi_rate_out = 8000;
-       //open any outputs, if not already opened
-       if (opts.audio_out_type == 0) openPulseOutput(&opts);
-       processM17IPF(&opts, &state);
      }
  
      else
@@ -3690,5 +3532,5 @@
      return (0);
  }
  
- //Tag: 2025
+ //Tag: 2026
  

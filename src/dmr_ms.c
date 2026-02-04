@@ -9,6 +9,8 @@
 #include "dsd.h"
 #include "dmr_const.h"
 
+// #define PRINT_AMBE72 //enable to view 72-bit AMBE codewords
+
 //A subroutine for processing MS voice
 void dmrMS (dsd_opts * opts, dsd_state * state)
 {
@@ -165,6 +167,16 @@ void dmrMS (dsd_opts * opts, dsd_state * state)
 
   }
 
+  //Kirisun Check VC-F for Enc Identifiers -- has bad fec, unless its loaded differently
+  //SEE: https://patents.google.com/patent/CN102307075A/en?q=(kirisun)&q=(dmr)&oq=kirisun
+  // if (opts->dmr_le == 3 && vc == 6)
+  // {
+  //   bool kokay = 0;
+  //   // kokay = Golay_24_12_decode(syncdata);
+  //   unsigned long long int kirisun = (unsigned long long int)ConvertBitIntoBytes(&syncdata[0], 48);
+  //   fprintf (stderr, "Kiri: %012llX; Golay Okay: %d; \n", kirisun, kokay);
+  // }
+
   for(i = 0; i < 8; i++) emb_pdu[i + 0] = syncdata[i];
   for(i = 0; i < 8; i++) emb_pdu[i + 8] = syncdata[i + 40];
 
@@ -243,6 +255,26 @@ void dmrMS (dsd_opts * opts, dsd_state * state)
   memcpy (m1, ambe_fr, sizeof(m1));
   memcpy (m2, ambe_fr2, sizeof(m2));
   memcpy (m3, ambe_fr3, sizeof(m3));
+
+  if (state->tyt_bp == 1)
+  {
+    tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
+    tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
+    tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+  }
+
+  if (state->csi_ee == 1)
+  {
+    csi72_ambe2_codeword_keystream(state, ambe_fr);
+    csi72_ambe2_codeword_keystream(state, ambe_fr2);
+    csi72_ambe2_codeword_keystream(state, ambe_fr3);
+  }
+
+  #ifdef PRINT_AMBE72
+  ambe2_codeword_print_i(opts, ambe_fr);
+  ambe2_codeword_print_i(opts, ambe_fr2);
+  ambe2_codeword_print_i(opts, ambe_fr3);
+  #endif
 
   processMbeFrame (opts, state, NULL, ambe_fr, NULL);
     memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
@@ -346,6 +378,9 @@ void dmrMS (dsd_opts * opts, dsd_state * state)
   timestr = NULL;
  }
 
+ //reset static ks counter
+ state->static_ks_counter[0] = 0;
+
 }
 
 //collect buffered 1st half and get 2nd half voice payload and then jump to full MS Voice decoding.
@@ -353,6 +388,9 @@ void dmrMSBootstrap (dsd_opts * opts, dsd_state * state)
 {
 
   char * timestr = getTimeC();
+
+  //reset static ks counter
+  state->static_ks_counter[0] = 0;
 
   int i, dibit;
   int *dibit_p;
@@ -535,6 +573,26 @@ void dmrMSBootstrap (dsd_opts * opts, dsd_state * state)
   memcpy (m1, ambe_fr, sizeof(m1));
   memcpy (m2, ambe_fr2, sizeof(m2));
   memcpy (m3, ambe_fr3, sizeof(m3));
+
+  if (state->tyt_bp == 1)
+  {
+    tyt16_ambe2_codeword_keystream(state, ambe_fr, 0);
+    tyt16_ambe2_codeword_keystream(state, ambe_fr2, 1);
+    tyt16_ambe2_codeword_keystream(state, ambe_fr3, 0);
+  }
+
+  if (state->csi_ee == 1)
+  {
+    csi72_ambe2_codeword_keystream(state, ambe_fr);
+    csi72_ambe2_codeword_keystream(state, ambe_fr2);
+    csi72_ambe2_codeword_keystream(state, ambe_fr3);
+  }
+
+  #ifdef PRINT_AMBE72
+  ambe2_codeword_print_i(opts, ambe_fr);
+  ambe2_codeword_print_i(opts, ambe_fr2);
+  ambe2_codeword_print_i(opts, ambe_fr3);
+  #endif
 
   processMbeFrame (opts, state, NULL, ambe_fr, NULL);
     memcpy(state->f_l4[0], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));

@@ -70,7 +70,7 @@ if [ "$RELEASE" = "y" ]; then
   cp .profile dsd-fme-portable/dsd-fme/
 
   #move (cut) the bat files to the portable folder root and delete the other ones so users won't get confused
-  mv dsd-fme-portable/dsd-fme/examples/cygwin_bat/start-dsd-fme.bat dsd-fme-portable/
+  mv dsd-fme-portable/dsd-fme/examples/cygwin_bat/*.bat dsd-fme-portable/
   mv dsd-fme-portable/dsd-fme/examples/cygwin_bat/example_options.txt dsd-fme-portable/
   mv dsd-fme-portable/dsd-fme/examples/cygwin_bat/complete_usage_options.txt dsd-fme-portable/
   rm -rf dsd-fme-portable/dsd-fme/examples/cygwin_bat
@@ -94,7 +94,6 @@ if [ "$RELEASE" = "y" ]; then
 
   #compiled items into release dsd-fme folder
   cp codec2/build/src/cygcodec2* dsd-fme-portable/dsd-fme/
-  cp itpp-4.3.1/build/itpp/cygitpp* dsd-fme-portable/dsd-fme/
   cp rtl-sdr/build/src/cyg* dsd-fme-portable/dsd-fme/
   cp mbelib/build/cygmbe* dsd-fme-portable/dsd-fme/
 
@@ -128,7 +127,6 @@ if [ "$RELEASE" = "y" ]; then
   cp /bin/cygdbus* dsd-fme-portable/dsd-fme/
   cp /bin/cygedit* dsd-fme-portable/dsd-fme/
   cp /bin/cygexpat* dsd-fme-portable/dsd-fme/
-  cp /bin/cygfam* dsd-fme-portable/dsd-fme/
   cp /bin/cygfdisk* dsd-fme-portable/dsd-fme/
   cp /bin/cygffi* dsd-fme-portable/dsd-fme/
   cp /bin/cygfftw3_threads* dsd-fme-portable/dsd-fme/
@@ -152,7 +150,6 @@ if [ "$RELEASE" = "y" ]; then
   cp /bin/cyggomp* dsd-fme-portable/dsd-fme/
   cp /bin/cyggpg-error* dsd-fme-portable/dsd-fme/
   cp /bin/cyggpgme* dsd-fme-portable/dsd-fme/
-  cp /bin/cyggsasl* dsd-fme-portable/dsd-fme/
   cp /bin/cyggsm* dsd-fme-portable/dsd-fme/
   cp /bin/cyggssapi_krb5* dsd-fme-portable/dsd-fme/
   cp /bin/cyggthread* dsd-fme-portable/dsd-fme/
@@ -179,7 +176,6 @@ if [ "$RELEASE" = "y" ]; then
   cp /bin/cygncurses* dsd-fme-portable/dsd-fme/
   cp /bin/cygnettle* dsd-fme-portable/dsd-fme/
   cp /bin/cygnghttp* dsd-fme-portable/dsd-fme/
-  cp /bin/cygntlm* dsd-fme-portable/dsd-fme/
   cp /bin/cygobjc* dsd-fme-portable/dsd-fme/
   cp /bin/cygogg* dsd-fme-portable/dsd-fme/
   cp /bin/cygopus* dsd-fme-portable/dsd-fme/

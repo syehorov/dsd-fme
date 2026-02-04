@@ -19,18 +19,6 @@ if [ "$ANSWER" = "y" ]; then
   export LD_LIBRARY_PATH
   echo $LD_LIBRARY_PATH
 
-  #ITPP
-  cd $cdir
-  printf "Installing itpp 4.3.1 from source http://sourceforge.net/projects/itpp/files/latest/download?source=files\n Please wait!\n"
-  wget -O itpp-latest.tar.bz2 http://sourceforge.net/projects/itpp/files/latest/download?source=files
-  tar xjf itpp-latest.tar.bz2
-  cd itpp-4.3.1/
-  mkdir build
-  cd build
-  cmake ..
-  make -j $(nproc)
-  make install
-
   #MBELIB
   cd $cdir
   printf "Installing mbelib\n Please wait!\n"
