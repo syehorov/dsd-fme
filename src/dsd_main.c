@@ -417,7 +417,7 @@
    // state->p25_vc_freq[1] = 0;
  
    //new nxdn stuff
-   state->nxdn_part_of_frame = 0;
+   state->nxdn_part_of_frame = 3;
    state->nxdn_ran = 0;
    state->nxdn_sf = 0;
    memset (state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc)); //init on 1, bad CRC all
@@ -678,6 +678,7 @@
    opts->uvquality = 3;
    opts->inverted_x2tdma = 1;    // most transmitter + scanner + sound card combinations show inverted signals for this
    opts->inverted_dmr = 0;       // most transmitter + scanner + sound card combinations show non-inverted signals for this
+   opts->inverted_nxdn = 0;      //only seek pos by default to reduce false sync pattern detections
    opts->mod_threshold = 26;
    opts->ssize = 128; //36 default, max is 128, much cleaner data decodes on Phase 2 cqpsk at max
    opts->msize = 1024; //15 default, max is 1024, much cleaner data decodes on Phase 2 cqpsk at max
@@ -1201,7 +1202,7 @@
    state->tg_hold = 0;
  
    //new nxdn stuff
-   state->nxdn_part_of_frame = 0;
+   state->nxdn_part_of_frame = 3;
    state->nxdn_ran = 0;
    state->nxdn_sf = 0;
    memset (state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc)); //init on 1, bad CRC all
@@ -1489,6 +1490,11 @@
    printf ("  -xx           Expect non-inverted X2-TDMA signal\n");
    printf ("  -xr           Expect inverted DMR signal\n");
    printf ("  -xd           Expect inverted ICOM dPMR signal\n");
+   #ifdef NXDN_OLD_SYNC
+   //
+   #else
+   printf ("  -xn           Expect inverted NXDN/DCR/IDAS signal\n");
+   #endif
    printf ("\n");
    printf ("  * denotes frame types that cannot be auto-detected.\n");
    printf ("  ** Phase 2 Single Frequency may require user to manually set WACN/SYSID/CC parameters if MAC_SIGNAL not present.\n");
@@ -1882,7 +1888,7 @@
    init_audio_filters(&state); //audio filters
    init_rrc_filter_memory(); //initialize input filtering
    InitAllFecFunction();
-   CNXDNConvolution_init();
+
  
    exitflag = 0;
  
@@ -1928,10 +1934,10 @@
            fprintf (stderr, "TG Hold set to %d \n", state.tg_hold);
            break;
  
-         //experimental audio monitoring
+         //raw audio monitoring
          case '8':
            opts.monitor_input_audio = 1;
-           fprintf (stderr,"Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");
+           fprintf (stderr,"Raw Analog Source Monitoring Enabled.\n");
            break;
  
          //rc4 enforcement on DMR (due to missing the PI header)
@@ -2757,6 +2763,11 @@
              sprintf (opts.output_name, "NXDN48");
              fprintf (stderr,"Setting symbol rate to 2400 / second\n");
              fprintf (stderr,"Decoding only NXDN 4800 baud frames.\n");
+             #ifdef NXDN_OLD_SYNC
+             //
+             #else
+             fprintf(stderr, "Notice: NXDN autodetect polarity disabled. \n Use -xn option if Inverted Signal expected.\n");
+             #endif
            }
            else if (optarg[0] == 'y')
            {
@@ -2892,6 +2903,7 @@
              // opts.setmod_bw = 12000; //causing issues
              sprintf (opts.output_name, "NXDN96");
              fprintf (stderr,"Decoding only NXDN 9600 baud frames.\n");
+             fprintf(stderr, "Notice: NXDN autodetect polarity disabled. \n Use -xn option if Inverted Signal expected.\n");
            }
            else if (optarg[0] == 'r')
            {
@@ -3077,6 +3089,15 @@
              opts.inverted_dpmr = 1;
              fprintf (stderr, "Expecting inverted ICOM dPMR signals.\n");
            }
+           else if (optarg[0] == 'n')
+           {
+             opts.inverted_nxdn = 1;
+             #ifdef NXDN_OLD_SYNC
+             //
+             #else
+             fprintf (stderr, "Expecting inverted NXDN/DCR/IDAS signals.\n");
+             #endif
+           }
            break;
  
          case 'r':
@@ -3088,7 +3109,6 @@
            opts.dmr_stereo = 0;
            state.dmr_stereo = 0;
            sprintf (opts.output_name, "MBE Playback");
-           state.optind = optind;
            break;
          case 'l':
            opts.use_cosine_filter = 0;
@@ -3098,6 +3118,10 @@
            exit (0);
          }
      }
+
+     // Set optind after getopt completes so -r works regardless of argument order
+     if (opts.playfiles == 1)
+       state.optind = optind;
  
      if (opts.resume > 0)
      {
