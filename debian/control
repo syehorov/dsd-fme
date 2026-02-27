@@ -1,5 +1,5 @@
 Source: dsd-fme
-Section: utils
+Section: hamradio
 Priority: optional
 Maintainer: Serhii Yehorov <s.yegorov@gmail.com>
 Build-Depends: debhelper-compat (= 13), cmake, g++, libitpp-dev
