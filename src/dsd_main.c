@@ -234,7 +234,7 @@
    state->dibit_buf_p = state->dibit_buf + 200;
    memset (state->dibit_buf, 0, sizeof (int) * 200);
    //dmr buffer
-   state->dmr_payload_p = state->dibit_buf + 200;
+   state->dmr_payload_p = state->dmr_payload_buf + 200;
    memset (state->dmr_payload_buf, 0, sizeof (int) * 200);
    memset (state->dmr_stereo_payload, 1, sizeof(int) * 144);
    //dmr buffer end
@@ -636,6 +636,7 @@
    opts->wav_out_file[0] = 0;
    opts->wav_out_fileR[0] = 0;
    opts->wav_out_file_raw[0] = 0;
+   opts->wav_custom_tag[0] = 0;
    opts->symbol_out_file[0] = 0;
    opts->lrrp_out_file[0] = 0;
    opts->event_out_file[0] = 0;
@@ -689,6 +690,7 @@
    //all RTL user options -- enabled AGC by default due to weak signal related issues
    opts->rtl_dev_index = 0;        //choose which device we want by index number
    opts->rtl_gain_value = 0;     //mid value, 0 - AGC - 0 to 49 acceptable values
+   opts->rtl_gain_actual = -100; //mirror dongle.gain actual values -100 is AUTO_GAIN, else nearest_gain(dongle.dev, dongle.gain);
    opts->rtl_squelch_level = 100; //100 by default, but only affects NXDN and dPMR during framesync test, compared to RMS value
    opts->rtl_volume_multiplier = 2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
    opts->rtl_udp_port = 0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
@@ -1186,7 +1188,9 @@
    //trunking
    memset (state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
    memset (state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
-   state->group_tally = 0;
+   //allocate max 24-bit address w/ memory with zero fill (termination) for end of strings, import will only copy 98, leaving the terminator intact
+   state->group_array = calloc(16778000, sizeof(groupinfo));
+   state->group_tally = 0; //is an unsigned int
    state->lcn_freq_count = 0; //number of frequncies imported as an enumerated lcn list
    state->lcn_freq_roll = 0; //needs reset if sync is found?
    state->last_cc_sync_time = time(NULL);
@@ -1433,6 +1437,8 @@
    printf ("  -w <file>     Output synthesized speech to a single static .wav file. (Do not use with -P Per Call Switch)\n");
    printf ("  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
    printf ("                 (Per Call works with everything now and doesn't require ncurses terminal!)\n");
+   printf ("  -j <string>   Custom Tag(s), colon delimited, to append to Per Call decoded .wav files.\n");
+   printf ("                 -j TGT_LAPD:TAG_FIRE:FREQ_851987500 (Total 3 Tags, Maximum Letter Length = 100)\n");
    printf ("  -a            Enable Call Alert Beep\n");
    printf ("                 (Warning! Might be annoying.)\n");
    printf ("  -J <file>     Specify Filename for Event Log Output.\n");
@@ -1773,10 +1779,10 @@
   if (opts->static_wav_file == 0)
   {
     if (opts->wav_out_f != NULL)
-      opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir, &state->event_history_s[0]);
+      opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts->wav_out_file, opts->wav_out_dir,  opts->wav_custom_tag, &state->event_history_s[0]);
 
     if (opts->wav_out_fR != NULL)
-      opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir, &state->event_history_s[1]);
+      opts->wav_out_fR = close_and_rename_wav_file(opts->wav_out_fR, opts->wav_out_fileR, opts->wav_out_dir,  opts->wav_custom_tag, &state->event_history_s[1]);
   }
 
   else if (opts->static_wav_file == 1)
@@ -1892,7 +1898,7 @@
  
    exitflag = 0;
  
-   while ((c = getopt (argc, argv, "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:G:D:L:V:U:YK:b:H:X:M:NQ:WrlZTF@:!:01:2:345:6:^:7:8_:9:Ek:I:J:O+:")) != -1)
+   while ((c = getopt (argc, argv, "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:u:x:A:S:G:D:L:V:U:YK:b:H:X:M:NQ:WrlZTF@:!:01:2:345:6:^:7:8_:9:Ek:I:J:O+:j:")) != -1)
      {
  
        switch (c)
@@ -1906,7 +1912,7 @@
            opts.call_alert = 1;
            break;
  
-         //Free'd up switches include: j, M,
+
          //NOTE: Don't use -*, found it exhibits unusual behavior, was setting
          //itself to -3 for some reason, may be reading contents of directory
  
@@ -1915,6 +1921,12 @@
  
          //NOTE: The 'K' option for single BP key has been swapped to 'b'
          //'K' is now used for hexidecimal key.csv imports
+
+         case 'j': //custom wav tags appended to per-call wav files
+           strncpy(opts.wav_custom_tag, optarg, 99);
+           opts.wav_custom_tag[99] = '\0';
+           fprintf(stderr, "Appending Tags %s to per-call wav files. \n", opts.wav_custom_tag);
+           break;
  
          //this is a debug option hidden from users, but use it to replay .bin files on loop
          case '~':

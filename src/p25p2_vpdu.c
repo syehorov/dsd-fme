@@ -1628,6 +1628,31 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 
 		}
 
+		//Extended Function Command - Abbreviated (Generic non MFID variant)
+		if (MAC[1+len_a] == 0x64)
+		{
+
+			uint8_t class = MAC[2+len_a];
+			uint8_t operand = MAC[3+len_a];
+			uint32_t argument = (MAC[4+len_a] << 16) | (MAC[5+len_a] << 8) | MAC[6+len_a];
+			uint32_t target = (MAC[7+len_a] << 16) | (MAC[8+len_a] << 8) | MAC[9+len_a];
+			fprintf (stderr, "\n Extended Function Command: Class: %02X; Operand: %02X; Arg/Src: %06X; Target: %d; ", class, operand, argument, target);
+			//WIP: Further Decode
+			if (class == 0)
+			{
+				if 			((operand & 0x7F) == 0x00) fprintf (stderr, "Radio Check; ");
+				else if ((operand & 0x7F) == 0x7D) fprintf (stderr, "Radio Detach; ");
+				else if ((operand & 0x7F) == 0x7E) fprintf (stderr, "Radio Uninhibit; ");
+				else if ((operand & 0x7F) == 0x7F) fprintf (stderr, "Radio Inhibit; ");
+				else 											fprintf (stderr, "Reserved; ");
+
+				//MSB is an ack of the above command
+				if ((operand >> 7) == 1)  fprintf (stderr, "Ack; ");
+			}
+			else fprintf (stderr, "Other Command; ");
+
+		}
+
 		//MFID90 Group Regroup Add Command
 		if (MAC[1+len_a] == 0x81 && MAC[2+len_a] == 0x90)
 		{
@@ -1816,12 +1841,12 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 		if (MAC[len_a+1] == 0x80 && MAC[len_a+2] != 0xA4 && MAC[len_a+2] != 0x90)
 		{
 			int unk1 = MAC[len_a+1]; //assuming this is the octet set for the 'manufacturer specific' message, may only be the MSBit
-			int unk2 = MAC[len_a+2]; //This field is observed as 0xAA, unknown if this is an opcode, or other MFID
+			int unk2 = MAC[len_a+2]; //This field is observed as 0xAA, its possible its a derived message of 0x2A from P25p1 LCW format
 			int mfid = MAC[len_a+3]; //This is where the 0xA4 (Harris) Identifier is found in this message, as opposed to +2
-			int len  = MAC[len_a+4] & 0x3F;; //0x11 or 17 dec sounds reasonable, but cannot verify
+			int len  = MAC[len_a+4] & 0x3F; //len of this message (should always be 17)
 
 			//bugfix observed on random errant second MAC message on Phase 2
-			//although can't 100% confirm, pretty sure these all have same len value
+			//confirmed this MAC message is always 17 (0x11)
 			if (len != 0x11)
 				goto END_PDU;
 
@@ -1841,8 +1866,7 @@ void process_MAC_VPDU(dsd_opts * opts, dsd_state * state, int type, unsigned lon
 			if (slot == 0 && state->lastsrc != 0) tsrc = state->lastsrc;
 			if (slot == 1 && state->lastsrcR != 0) tsrc = state->lastsrcR;
 
-			// harris_gps (opts, state, slot, mac_bits); //fallback
-			nmea_harris (opts, state, mac_bits+0, tsrc, slot); //new
+			harris_lptt (opts, state, mac_bits+40, tsrc, slot, 2);
 
 			//debug - just dump payload
 			// for (i = 0; i < 24; i++)

@@ -173,8 +173,8 @@ typedef struct pa_devicelist
 typedef struct
 {
   unsigned long int groupNumber;
-  char groupMode[8]; //char *?
-  char groupName[50];
+  char groupMode[3];
+  char groupName[100];
 } groupinfo;
 
 
@@ -324,6 +324,7 @@ typedef struct
   char wav_out_file[1024];
   char wav_out_fileR[1024];
   char wav_out_file_raw[1024];
+  char wav_custom_tag[100];
   char symbol_out_file[1024];
   char lrrp_out_file[1024];
   char event_out_file[1024];
@@ -364,6 +365,7 @@ typedef struct
   int unmute_encrypted_p25;
   int rtl_dev_index;
   int rtl_gain_value;
+  int rtl_gain_actual;
   int rtl_squelch_level;
   int rtl_volume_multiplier;
   int rtl_udp_port;
@@ -870,7 +872,7 @@ typedef struct
   //trunking group and lcn freq list
   long int trunk_lcn_freq[26]; //max number on an EDACS system, should be enough on DMR too hopefully
   long int trunk_chan_map[0xFFFF]; //NXDN - 10 bit; P25 - 16 bit; DMR up to 12 bit (standard TIII)
-  groupinfo group_array[0x3FF]; //max supported by Cygwin is 3FFF, I hope nobody actually tries to import this many groups
+  groupinfo * group_array;
   unsigned int group_tally; //tally number of groups imported from CSV file for referencing later
   int lcn_freq_count;
   int lcn_freq_roll; //number we have 'rolled' to in search of the CC
@@ -1184,7 +1186,7 @@ void openWavOutFileLR (dsd_opts * opts, dsd_state * state); //stereo wav file fo
 void openWavOutFileRaw (dsd_opts * opts, dsd_state * state);
 SNDFILE * open_wav_file (char * dir, char * temp_filename, uint16_t sample_rate, uint8_t ext);
 SNDFILE * close_wav_file(SNDFILE * wav_file);
-SNDFILE * close_and_rename_wav_file(SNDFILE * wav_file, char * wav_out_filename, char * dir, Event_History_I * event_struct);
+SNDFILE * close_and_rename_wav_file(SNDFILE * wav_file, char * wav_out_filename, char * dir, char * custom_tag, Event_History_I * event_struct);
 SNDFILE * close_and_delete_wav_file(SNDFILE * wav_file, char * wav_out_filename);
 void openSymbolOutFile (dsd_opts * opts, dsd_state * state);
 void closeSymbolOutFile (dsd_opts * opts, dsd_state * state);
@@ -1290,6 +1292,7 @@ uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(uint8_t bits[], int len); //converted from op25 crc6
+uint32_t nxdn_message_crc32(uint8_t * input, int len);
 
 //YSF Soft Decision Viterbi
 uint32_t ysf_soft_decision_viterbi(uint8_t * dbuf, int d_len, int num_bytes, int offset, uint8_t * viterbi_bits, uint8_t * viterbi_bytes);
@@ -1319,6 +1322,7 @@ void NXDN_decode_VCALL(dsd_opts * opts, dsd_state * state, uint8_t * Message);
 void NXDN_decode_VCALL_IV(dsd_opts * opts, dsd_state * state, uint8_t * Message);
 char * NXDN_Call_Type_To_Str(uint8_t CallType);
 void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t * Duplex, uint8_t * TransmissionMode);
+void NXDN_Data_Call_Option_To_Str(uint8_t DataCallOption, uint8_t * Duplex, uint8_t * TransmissionMode);
 char * NXDN_Cipher_Type_To_Str(uint8_t CipherType);
 //added these
 void NXDN_decode_Prop(dsd_opts * opts, dsd_state * state, uint8_t * Message);
@@ -1330,6 +1334,10 @@ void NXDN_decode_srv_info(dsd_opts * opts, dsd_state * state, uint8_t * Message)
 void NXDN_decode_site_info(dsd_opts * opts, dsd_state * state, uint8_t * Message);
 void nxdn_decode_dst_info(dsd_opts * opts, dsd_state * state, uint8_t * Message);
 void NXDN_decode_adj_site(dsd_opts * opts, dsd_state * state, uint8_t * Message);
+void nxdn_sdcall_header(dsd_opts * opts, dsd_state * state, uint8_t * Message);
+void nxdn_sdcall_iv(dsd_opts * opts, dsd_state * state, int type, uint8_t * Message);
+void nxdn_dcall_header(dsd_opts * opts, dsd_state * state, uint8_t * Message);
+int  nxdn_dcall_data(dsd_opts * opts, dsd_state * state, int type, uint8_t * Message);
 //Type-D SCCH Message Decoder
 void NXDN_decode_scch(dsd_opts * opts, dsd_state * state, uint8_t * Message, uint8_t direction);
 void NXDN_decode_VCALL_ARIB(dsd_opts * opts, dsd_state * state, uint8_t * Message);
@@ -1398,10 +1406,11 @@ void dmr_embedded_gps (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[]);
 void apx_embedded_gps (dsd_opts * opts, dsd_state * state, uint8_t lc_bits[]);
 void lip_protocol_decoder (dsd_opts * opts, dsd_state * state, uint8_t * input);
 void nmea_iec_61162_1 (dsd_opts * opts, dsd_state * state, uint8_t * input, uint32_t src, int type);
-void nmea_harris (dsd_opts * opts, dsd_state * state, uint8_t * input, uint32_t src, int slot);
-void harris_gps(dsd_opts * opts, dsd_state * state, int slot, uint8_t * input);
+void harris_lptt (dsd_opts * opts, dsd_state * state, uint8_t * input, uint32_t src, int slot, int phase);
+void nxdn_gps_report(dsd_opts * opts, dsd_state * state, uint8_t * input, uint32_t src);
 void utf16_to_text (dsd_state * state, uint8_t wr, uint16_t len, uint8_t * input);
 void utf8_to_text (dsd_state * state, uint8_t wr, uint16_t len, uint8_t * input);
+uint8_t nmea_sentence_checker(dsd_opts * opts, dsd_state * state, uint8_t * input, uint8_t slot, int len);
 
 //"DMR STEREO"
 void dmrBSBootstrap (dsd_opts * opts, dsd_state * state);
@@ -1610,6 +1619,9 @@ int udp_socket_connectA(dsd_opts * opts, dsd_state * state);
 void udp_socket_blaster(dsd_opts * opts, dsd_state * state, size_t nsam, void * data);
 void udp_socket_blasterA(dsd_opts * opts, dsd_state * state, size_t nsam, void * data);
 
+//15-bit Scrambler
+void pdu_scrambler_keystream_creation(uint8_t * ks, int lfsr, int len);
+
 //RC4 function prototypes
 void rc4_voice_decrypt (int drop, uint8_t keylength, uint8_t messagelength, uint8_t key[], uint8_t cipher[], uint8_t plain[]);
 void rc4_block_output (int drop, int keylen, int meslen, uint8_t * key, uint8_t * output_blocks);
@@ -1652,6 +1664,7 @@ void lfsr_64_to_128(uint8_t * iv);
 void LFSR128(dsd_state * state);
 void LFSR128n(dsd_state * state);
 void LFSR128d(dsd_state * state);
+void LFSR128npdu(dsd_state * state);
 
 
 #ifdef __cplusplus

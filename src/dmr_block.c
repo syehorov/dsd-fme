@@ -270,13 +270,12 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
       {
         strcat (rsp_string, "NACK - ");
         if (r_type == 0) strcat (rsp_string, "Illegal Format");
-        if (r_type == 1) strcat (rsp_string, "Illegal Format");
-        if (r_type == 2) strcat (rsp_string, "Packet CRC ERR");
-        if (r_type == 3) strcat (rsp_string, "Memory Full");
-        if (r_type == 4) strcat (rsp_string, "FSN Out of Seq");
-        if (r_type == 5) strcat (rsp_string, "Undeliverable");
-        if (r_type == 6) strcat (rsp_string, "PKT Out of Seq");
-        if (r_type == 7) strcat (rsp_string, "Invalid User");
+        if (r_type == 1) strcat (rsp_string, "Packet CRC ERR");
+        if (r_type == 2) strcat (rsp_string, "Memory Full");
+        if (r_type == 3) strcat (rsp_string, "FSN Out of Seq");
+        if (r_type == 4) strcat (rsp_string, "Undeliverable");
+        if (r_type == 5) strcat (rsp_string, "PKT Out of Seq");
+        if (r_type == 6) strcat (rsp_string, "Invalid User");
       }
       if (r_class == 2) strcat (rsp_string, "SACK - Retry");
       // if (r_status) strcat (rsp_string, " - %d", r_status);
@@ -293,8 +292,19 @@ void dmr_dheader (dsd_opts * opts, dsd_state * state, uint8_t dheader[], uint8_t
     //Confirmed or Unconfirmed Data Packets Header
     if (dpf == 2 || dpf == 3)
     {
-      if (dpf == 2) fprintf (stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - FSN %d", sap, sap_string, f, bf, poc, fsn);
-      if (dpf == 3) fprintf (stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN %d", sap, sap_string, f, bf, poc, s, ns, fsn);
+
+      uint8_t fsn_number = (fsn & 7) + 1;
+
+      char fsn_string[50];
+      memset(fsn_string, 0, sizeof(fsn_string));
+
+      if (fsn == 0)         sprintf(fsn_string, "%s", "Unconfirmed data single fragment");
+      else if (fsn == 8)    sprintf(fsn_string, "%s", "Confirmed data single fragment");
+      else if (fsn >= 9)    sprintf(fsn_string, "%s", "Last confirmed data fragment with number");
+      else                  sprintf(fsn_string, "%s", "Subsequent confirmed data fragment with number");
+
+      if (dpf == 2) fprintf (stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - FSN: [%X] - %s %d; ", sap, sap_string, f, bf, poc, fsn, fsn_string, fsn_number);
+      if (dpf == 3) fprintf (stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN: [%X] - %s %d; ", sap, sap_string, f, bf, poc, s, ns, fsn, fsn_string, fsn_number);
       state->data_header_blocks[slot] = bf;
       if (dpf == 3) state->data_conf_data[slot] = 1; //set confirmed data delivery flag for additional CRC checks, block assembly, etc.
 
@@ -1028,9 +1038,9 @@ void dmr_block_assembler (dsd_opts * opts, dsd_state * state, uint8_t block_byte
           R = state->rkey_array[state->payload_keyidR];
 
         //loader for aes keys
-        uint8_t kaes[32];
-        uint8_t empt[32];
-        uint8_t maes[16];
+        uint8_t kaes[32]; memset(kaes, 0, sizeof(kaes));
+        uint8_t empt[32]; memset(empt, 0, sizeof(empt));
+        uint8_t maes[16]; memset(maes, 0, sizeof(maes));
         for (i = 0; i < 8; i++)
         {
           kaes[i+0]   = ((state->rkey_array[kid+0x000]) >> (56-(i*8))) & 0xFF;
