@@ -1,5 +1,5 @@
-rtlsdr-airband (5.1.1-1) UNRELEASED; urgency=medium
+dsd-fme (2026-34-g69d3115) UNRELEASED; urgency=medium
 
   * Initial release.
 
- -- recon <s.yegorov@gmail.com>  Wed, 14 May 2025 02:11:24 +0300
+ -- syehorov <s.yegorov@gmail.com>  Thu, 23 Jul 2026 02:11:24 +0300
